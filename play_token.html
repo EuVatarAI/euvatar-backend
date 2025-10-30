@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>Euvatar – Vertical 9:16 · cartão de contexto temporário</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root{ color-scheme: dark }
+  *{ box-sizing:border-box }
+  body{ margin:0; background:#0b0b0b; color:#eee; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif }
+  .wrap{ max-width:980px; margin:16px auto; padding:0 12px }
+  .top{ display:flex; justify-content:space-between; align-items:center }
+  .pill{ display:inline-flex; gap:8px; align-items:center; border:1px solid #333; border-radius:999px; padding:6px 10px; background:#121212 }
+  .muted{ opacity:.85 }
+
+  /* PALCO retrato 9:16 */
+  .stage{
+    position:relative;
+    margin:18px auto;
+    height:min(86vh, 820px);
+    aspect-ratio:9/16;
+    width:auto;
+    border:1px solid #222; border-radius:16px; overflow:hidden; background:#000;
+    box-shadow:0 12px 40px rgba(0,0,0,.45);
+  }
+
+  /* AVATAR cobre o palco */
+  #vid{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; z-index:1; background:#000 }
+
+  /* CARTÃO DE CONTEXTO (pequeno, sobre o avatar, some sozinho) */
+  .ctxCard{
+    position:absolute; right:12px; top:12px; z-index:3;
+    width:min(38%, 240px); /* limite de tamanho do cartão */
+    border:1px solid #2a2a2a; border-radius:12px; overflow:hidden;
+    background:#0f0f0f;
+    box-shadow:0 10px 30px rgba(0,0,0,.45);
+    opacity:0; transform:translateY(-6px); pointer-events:none;
+    transition:opacity .25s ease, transform .25s ease;
+  }
+  .ctxCard.show{ opacity:1; transform:translateY(0); pointer-events:auto }
+  .ctxCard img{ display:block; width:100%; height:auto; object-fit:cover }
+
+  /* Nome de exibição (opcional; discreto, não é legenda de mídia) */
+  .displayName{
+    position:absolute; left:12px; top:12px; z-index:4;
+    display:none; padding:6px 10px; border-radius:999px;
+    background:rgba(8,8,8,.72); border:1px solid #2a2a2a;
+    font-size:14px; line-height:1; backdrop-filter:blur(2px);
+  }
+  .displayName.show{ display:inline-block }
+
+  /* HUD / status */
+  .status{ position:absolute; left:12px; top:12px; transform:translateY(40px);
+    display:none; align-items:center; gap:8px; background:rgba(10,10,10,.7);
+    border:1px solid #2c2c2c; border-radius:999px; padding:6px 10px; font-size:14px; z-index:6 }
+  .dot{ width:10px; height:10px; border-radius:999px; background:#20d29b; box-shadow:0 0 8px rgba(32,210,155,.6) }
+  .status.show{ display:inline-flex }
+  .status.rec .dot{ background:#ff3366; box-shadow:0 0 10px rgba(255,51,102,.8); animation:blink .9s infinite }
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+
+  /* Botões como no layout */
+  .imgbtn{ background:transparent; border:0; padding:0; cursor:pointer; display:inline-block; transition:.08s transform,.12s filter }
+  .imgbtn:active{ transform:scale(.96); filter:brightness(1.05) }
+  .imgbtn img{ display:block; width:100%; height:auto; object-fit:contain }
+
+  .hangup{ position:absolute; right:14px; bottom:16px; width:48px; height:48px; z-index:5 }
+  .hangup img{ width:100%; height:100% }
+
+  .mic{ position:absolute; left:14px; bottom:14px; width:58px; height:58px; border-radius:50%;
+        display:grid; place-items:center; border:1px solid #2b2b2b; background:#121212; cursor:pointer;
+        transition:.15s transform,.2s box-shadow; z-index:5 }
+  .mic svg{ width:26px; height:26px }
+  .mic.rec{ box-shadow:0 0 0 6px rgba(255,0,74,.18), 0 0 28px rgba(255,0,74,.28); border-color:#ff004a }
+
+  /* IDLE (fale comigo) */
+  .idle{ position:absolute; inset:0; display:grid; place-items:center; background:rgba(0,0,0,.25); backdrop-filter:blur(1.5px); z-index:7 }
+  .idleCard{ position:relative; width:100%; height:100% }
+  .idlePoster{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; filter:brightness(.97) }
+  .talkWrap{ position:absolute; right:14px; top:38%; width:140px; z-index:8 }
+  .talkWrap .imgbtn{ width:140px }
+  .hidden{ display:none!important }
+
+  /* Toast + Modal Continuar */
+  .toast{ position:fixed; right:16px; bottom:16px; background:#1a1a1a; border:1px solid #333; border-radius:12px; padding:10px 12px; display:none; z-index:10; max-width:60ch }
+  .toast.show{ display:block }
+  .modal{ position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; padding:16px; z-index:12 }
+  .modal.show{ display:flex }
+  .box{ width:min(420px,92vw); background:#121212; border:1px solid #2a2a2a; border-radius:16px; padding:18px; text-align:center }
+  .rowModal{ display:flex; gap:14px; justify-content:center; align-items:center; margin-top:10px; flex-wrap:wrap }
+  .rowModal .imgbtn{ width:160px; max-width:46% }
+
+  /* Dev log (opcional) */
+  .devlog{ position:fixed; left:16px; bottom:16px; width:520px; max-width:92vw; height:160px; background:#0e0e0e; border:1px solid #262626; border-radius:12px; padding:6px; font:12px/1.3 ui-monospace,Menlo,monospace; color:#cbd5e1; overflow:auto; opacity:.9 }
+  .devlog .t{color:#94a3b8}.devlog .k{color:#22d3ee}.devlog .v{color:#eab308}.devlog .e{color:#fb7185}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div><strong>Euvatar</strong> <span class="muted">· Avatar vertical com cartão de contexto</span></div>
+    <div class="pill"><span id="timer">⏳ 00:00 / 00:00</span> <button id="btnAdmin" class="muted">Config</button></div>
+  </div>
+
+  <div class="stage" id="stage">
+    <!-- Avatar -->
+    <video id="vid" autoplay playsinline muted></video>
+
+    <!-- Cartão de CONTEXTO (pequeno e temporário) -->
+    <div id="ctxCard" class="ctxCard" aria-live="polite" title="Clique para fechar">
+      <img id="ctxImg" alt="">
+    </div>
+    <div id="displayName" class="displayName"></div>
+
+    <!-- HUD -->
+    <div id="status" class="status"><div class="dot"></div><span id="statusText">Pronto</span></div>
+
+    <!-- Botões -->
+    <button id="btnEnd" class="imgbtn hangup hidden" aria-label="Encerrar"><img src="estatic/a.png" alt="Encerrar"></button>
+    <button id="btnMic" class="mic hidden" aria-label="Falar por voz" title="Falar por voz">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M12 14a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v4a3 3 0 0 0 3 3z"/>
+        <path d="M5 11a1 1 0 0 1 2 0 5 5 0 0 0 10 0 1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V20h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.08A7 7 0 0 1 5 11z"/>
+      </svg>
+    </button>
+
+    <!-- IDLE -->
+    <div id="idle" class="idle">
+      <div class="idleCard">
+        <img id="idlePoster" class="idlePoster" alt="Poster">
+        <div class="talkWrap">
+          <button id="btnTalk" class="imgbtn" aria-label="Fale comigo">
+            <img src="estatic/fale%20comigo.png" alt="fale comigo">
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div>
+</div>
+
+<!-- MODAL CONTINUAR -->
+<div id="modExt" class="modal" role="dialog" aria-modal="true" aria-labelledby="ttlExt">
+  <div class="box">
+    <h3 id="ttlExt">Continuar na conversa?</h3>
+    <p class="muted">Sua sessão está acabando. Deseja permanecer por mais 2 min e 30s?</p>
+    <div class="rowModal">
+      <button id="btnNo" class="imgbtn" aria-label="Encerrar"><img src="estatic/encerrar.png" alt="encerrar"></button>
+      <button id="btnYes" class="imgbtn" aria-label="Continuar"><img src="estatic/continuar.png" alt="continuar"></button>
+    </div>
+  </div>
+</div>
+
+<!-- CONFIG -->
+<div id="modAdm" class="toast" style="right:auto;left:16px;bottom:auto;top:16px;display:none">
+  <div><strong>Config</strong></div>
+  <div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
+    <div><label>Idioma</label><select id="cfgLang"><option>pt-BR</option><option>en-US</option></select></div>
+    <div><label>Qualidade</label><select id="cfgQuality"><option>low</option><option>medium</option><option>high</option></select></div>
+    <div><label>Voz (opcional)</label><input id="cfgVoice" placeholder="ex.: sophia"></div>
+    <div><label>URL da imagem de contexto</label><input id="cfgCtxURL" placeholder="cole a URL (ex.: cardápio)"></div>
+  </div>
+  <label style="display:block;margin-top:8px">Nome de exibição (chip)</label>
+  <input id="cfgDisplayName" placeholder="ex.: ZAVA" style="width:100%">
+  <label style="display:block;margin-top:8px">Backstory</label>
+  <textarea id="cfgBackstory" rows="3" style="width:100%"></textarea>
+  <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+    <button id="btnAdmClose">Fechar</button>
+    <button id="btnAdmSave" style="background:#20d29b;color:#02150f;border:0">Salvar</button>
+  </div>
+</div>
+
+<script type="module">
+import { Room, setLogLevel } from "https://cdn.skypack.dev/livekit-client";
+setLogLevel("warn");
+
+/* =================== CONFIG =================== */
+const API = "http://127.0.0.1:5001";
+const AVATAR_ID = "b53bf14741784d0d8f49edef2d74ef4e";
+const SESSION_MIN = 2.5;
+const AUTO_GREETING = true;
+const GREETING_TEXT = "Olá! tudo bem?.";
+const IDLE_IMG = "https://images.unsplash.com/photo-1502989642968-94fbdc9eace4?q=80&w=1200&auto=format&fit=crop";
+
+/* =================== STATE/DOM =================== */
+let room=null, session_id=null, countdown=null, endAt=0, warned=false;
+
+const video=document.getElementById("vid");
+const idle=document.getElementById("idle"), idlePoster=document.getElementById("idlePoster");
+const btnTalk=document.getElementById("btnTalk"), btnEnd=document.getElementById("btnEnd"), btnMic=document.getElementById("btnMic");
+const timer=document.getElementById("timer"), toast=document.getElementById("toast");
+const statusEl=document.getElementById("status"), statusText=document.getElementById("statusText");
+
+const ctxCard=document.getElementById("ctxCard"), ctxImg=document.getElementById("ctxImg");
+let ctxTO=null; const CTX_TTL_MS=6500; // tempo visível do cartão
+
+const displayName=document.getElementById("displayName");
+
+const btnAdmin=document.getElementById("btnAdmin"), modAdm=document.getElementById("modAdm");
+const cfgLang=document.getElementById("cfgLang"), cfgQuality=document.getElementById("cfgQuality"), cfgVoice=document.getElementById("cfgVoice");
+const cfgCtxURL=document.getElementById("cfgCtxURL"), cfgDisplayName=document.getElementById("cfgDisplayName"), cfgBackstory=document.getElementById("cfgBackstory");
+const btnAdmSave=document.getElementById("btnAdmSave"), btnAdmClose=document.getElementById("btnAdmClose");
+
+const modExt=document.getElementById("modExt"), btnYes=document.getElementById("btnYes"), btnNo=document.getElementById("btnNo");
+
+/* =================== logger dev (opcional) =================== */
+const dev=document.createElement('div'); dev.className='devlog'; dev.style.display='none'; document.body.appendChild(dev);
+function addLog(k,m,v){const t=new Date().toTimeString().slice(0,8); dev.innerHTML+=`<span class=t>[${t}]</span> <span class=k>[${k}]</span> ${m?m:''}${v?` | <span class=v>${(typeof v==='string'?v:JSON.stringify(v))}</span>`:''}<br/>`; dev.scrollTop=dev.scrollHeight;}
+function showDev(on=true){dev.style.display=on?'block':'none'}; showDev(true);
+
+/* =================== utils =================== */
+function fetchWithTimeout(url, opts={}, ms=12000){
+  const controller=new AbortController(); const id=setTimeout(()=>controller.abort(),ms);
+  const merged={...opts, signal:(opts.signal ?? controller.signal)};
+  return fetch(url, merged).finally(()=>clearTimeout(id));
+}
+let hideStatusTO=null, toastTO=null;
+function showStatus(text, cls=''){clearTimeout(hideStatusTO); statusEl.className='status show '+(cls||''); statusText.textContent=text;}
+function hideStatus(delay=1200){clearTimeout(hideStatusTO); hideStatusTO=setTimeout(()=>statusEl.classList.remove("show"),delay);}
+function toastMsg(t){clearTimeout(toastTO); toast.textContent=t; toast.classList.add("show"); toastTO=setTimeout(()=>toast.classList.remove('show'),2600);}
+function mmss(sec){const m=String(Math.floor(sec/60)).padStart(2,"0"), s=String(Math.floor(sec%60)).padStart(2,"0"); return `${m}:${s}`}
+
+/* =================== Config persistida =================== */
+function loadCfg(){
+  const s=JSON.parse(localStorage.getItem("euv_cfg_vertical_card")||"{}");
+  cfgLang.value=s.lang||"pt-BR";
+  cfgQuality.value=s.quality||"low";
+  cfgVoice.value=s.voice||"";
+  cfgCtxURL.value=s.ctxURL||"";
+  cfgDisplayName.value=s.displayName||"";
+  cfgBackstory.value=s.backstory||"";
+  cfgBackstory.value=s.backstory||"";
+
+  if(s.displayName){ displayName.textContent=s.displayName; displayName.classList.add('show'); }
+  else { displayName.textContent=""; displayName.classList.remove('show'); }
+
+  if(s.ctxURL) showCtxCard(s.ctxURL); // se quiser começar já mostrando
+  addLog('CFG','load', s);
+  return {language:cfgLang.value, quality:cfgQuality.value, voice:cfgVoice.value.trim(), backstory:cfgBackstory.value.trim()};
+}
+function saveCfg(){
+  const s={ lang:cfgLang.value, quality:cfgQuality.value, voice:cfgVoice.value.trim(), ctxURL:cfgCtxURL.value.trim(), displayName:cfgDisplayName.value.trim(), backstory:cfgBackstory.value.trim() };
+  localStorage.setItem("euv_cfg_vertical_card", JSON.stringify(s));
+  if(s.displayName){ displayName.textContent=s.displayName; displayName.classList.add('show'); }
+  else { displayName.textContent=""; displayName.classList.remove('show'); }
+  if(s.ctxURL) showCtxCard(s.ctxURL);
+  addLog('CFG','save', s);
+}
+
+/* ========= Cartão de contexto (aparece e some) ========= */
+function showCtxCard(url){
+  if(!url) return hideCtxCard();
+  ctxImg.src=url;
+  ctxCard.classList.add('show');
+  clearTimeout(ctxTO);
+  ctxTO=setTimeout(hideCtxCard, CTX_TTL_MS);
+}
+function hideCtxCard(){
+  ctxCard.classList.remove('show');
+  clearTimeout(ctxTO);
+}
+ctxCard.addEventListener('click', hideCtxCard);
+
+/* =================== /say contínuo (seu fluxo) =================== */
+let SAY_BUSY=false;
+const sayQueue=[];
+let sayFailures=0; const SAY_FAIL_LIMIT=3;
+let sayWatchdog=null;
+let lastSayAt=0; const COOLDOWN_MS=1600;
+let speakingUntil = 0;
+const SPEAK_BUFFER_MS = 600;
+const HARD_SAY_TIMEOUT_MS = 15000;
+
+function startSayWatchdog(){ stopSayWatchdog(); sayWatchdog=setInterval(()=>{ if(SAY_BUSY){ addLog('SAY','watchdog releasing busy'); SAY_BUSY=false; } },6000); }
+function stopSayWatchdog(){ if(sayWatchdog){ clearInterval(sayWatchdog); sayWatchdog=null; } }
+
+function enqueueSay(text){
+  if(!session_id||!text) return;
+  const t=String(text).trim(); if(!t) return;
+  sayQueue.push(t); addLog('SAY','enqueue', {len:sayQueue.length, text:t});
+  drainSay();
+}
+async function drainSay(){
+  if(SAY_BUSY || !session_id) return;
+  SAY_BUSY=true; startSayWatchdog();
+  try{
+    while(sayQueue.length && session_id){
+      const t=sayQueue.shift();
+
+      const now = Date.now();
+      const waitBusy = Math.max(0, speakingUntil - now);
+      if(waitBusy>0){ addLog('SAY','aguardando fala terminar', waitBusy+'ms'); await new Promise(r=>setTimeout(r, waitBusy)); }
+
+      const wait = Math.max(0, COOLDOWN_MS - (Date.now() - lastSayAt));
+      if(wait>0) await new Promise(r=>setTimeout(r, wait));
+
+      const ok = await doSay(t);
+      if(!ok){
+        sayFailures++;
+        if(sayFailures>=SAY_FAIL_LIMIT){
+          toastMsg("Falha ao enviar várias vezes. Pulei essa fala para continuar.");
+          sayFailures=0;
+        }else{
+          await new Promise(r=>setTimeout(r, 450*sayFailures));
+          sayQueue.unshift(t);
+        }
+      }else{
+        sayFailures=0;
+      }
+    }
+  } finally { SAY_BUSY=false; stopSayWatchdog(); }
+}
+async function doSay(text){
+  for(let attempt=1; attempt<=4 && session_id; attempt++){
+    try{
+      showStatus(attempt===1?"Enviando…":"Reenviando…");
+
+      const hardTO = setTimeout(async ()=>{
+        try{ await fetchWithTimeout(`${API}/interrupt`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id})}, 4000); }catch{}
+      }, HARD_SAY_TIMEOUT_MS);
+
+      const r=await fetchWithTimeout(`${API}/say`,{
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({session_id,avatar_id:AVATAR_ID,text})
+      }, 15000);
+      clearTimeout(hardTO);
+
+      if(!r.ok){
+        if(r.status===410){ toastMsg("Sessão encerrou. Toque em ‘Fale comigo’ para abrir outra."); return false; }
+        if(r.status===429 || r.status===423){ await new Promise(res=>setTimeout(res, 1200*attempt)); continue; }
+        if(r.status===502 || r.status===503){ await new Promise(res=>setTimeout(res, 700*attempt)); continue; }
+        throw new Error(`say HTTP ${r.status}`);
+      }
+
+      const j=await r.json();
+      lastSayAt = Date.now();
+      showStatus("Respondendo…"); hideStatus(1400);
+
+      /* janela ocupada baseada na duração estimada */
+      if(j?.duration_ms && Number.isFinite(j.duration_ms)){
+        speakingUntil = Date.now() + j.duration_ms + SPEAK_BUFFER_MS;
+      } else {
+        speakingUntil = Date.now() + 8000;
+      }
+
+      /* mídia vinda do backend vira cartão temporário no canto */
+      if(j?.media?.type==="image" && j.media.url){
+        showCtxCard(j.media.url);
+        addLog('MEDIA','ctx card (auto-hide)', j.media.url);
+      }
+
+      addLog('SAY','ok', j);
+      return true;
+    }catch(e){
+      addLog('ERR','doSay erro', String(e?.message||e));
+      if(attempt===4){ showStatus("Erro ao enviar"); hideStatus(1600); }
+    }
+  }
+  return false;
+}
+
+/* =================== timer + modal CONTINUAR =================== */
+// timer variables (countdown, endAt, warned) are declared earlier in STATE/DOM
+function startTimer(min){
+  const total=Math.round(min*60); const start=Date.now()/1000; endAt=start+total; warned=false; clearInterval(countdown);
+  addLog('TIMER','start', {total_sec:total});
+  countdown=setInterval(()=>{ 
+    const now=Date.now()/1000; 
+    const left=Math.max(0,endAt-now); 
+    const elap=total-left; 
+    timer.textContent=`⏳ ${mmss(elap)} / ${mmss(total)}`;
+    if(left<=20 && !warned){ warned=true; modExt.classList.add("show"); }
+    if(left<=0){ clearInterval(countdown); modExt.classList.add("show"); }
+  },1000);
+}
+btnNo.onclick=()=>{ modExt.classList.remove("show"); endSession(); }
+btnYes.onclick=()=>{ modExt.classList.remove("show"); endAt += Math.round(SESSION_MIN*60); warned=false; showStatus("Sessão estendida"); hideStatus(1500); }
+
+/* =================== fluxo =================== */
+idlePoster.src = IDLE_IMG; loadCfg();
+btnTalk.onclick=openSession;
+btnEnd.onclick=endSession;
+
+btnAdmin.onclick=()=>{modAdm.style.display='block'}
+btnAdmClose.onclick=()=>{modAdm.style.display='none'}
+btnAdmSave.onclick=()=>{saveCfg(); modAdm.style.display='none'; toastMsg("Config salva.")}
+
+/* abrir sessão */
+async function openSession(){
+  try{
+    idle.classList.add("hidden");
+    showStatus("Conectando…");
+    const c=loadCfg();
+
+    const r=await fetch(`${API}/new?`+new URLSearchParams({
+      language:c.language, persona:"default", quality:c.quality, minutes:SESSION_MIN, backstory:c.backstory
+    }));
+    const j=await r.json(); if(!j.ok) throw new Error(j.error||"Falha ao criar sessão");
+
+    const room0=new Room();
+    room0.on("trackSubscribed",(track)=>{
+      if(track.kind==='video') track.attach(video);
+      if(track.kind==='audio'){ const a=new Audio(); a.autoplay=true; a.playsInline=true; track.attach(a); document.body.appendChild(a); }
+    });
+    room0.on("connectionStateChanged",(state)=>{ addLog('LK','state', state); });
+    await room0.connect(j.livekit_url, j.access_token);
+    room=room0; session_id=j.session_id;
+
+    btnEnd.classList.remove("hidden");
+    btnMic.classList.remove("hidden");
+
+    startTimer(SESSION_MIN);
+    showStatus("Conectado"); hideStatus();
+
+    if(AUTO_GREETING && GREETING_TEXT) enqueueSay(GREETING_TEXT);
+  }catch(e){
+    showStatus("Erro na conexão"); hideStatus(2200);
+    toastMsg("Erro: "+e.message);
+    idle.classList.remove("hidden");
+  }
+}
+
+/* encerrar sessão */
+async function endSession(){
+  try{ await fetch(`${API}/end`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id})}) }catch{}
+  try{ if(room) await room.disconnect() }catch{}
+  room=null; session_id=null; warned=false; clearInterval(countdown); timer.textContent="⏳ 00:00 / 00:00";
+  hideCtxCard(); /* limpa o cartão ao encerrar */
+  btnEnd.classList.add("hidden"); btnMic.classList.add("hidden");
+  idle.classList.remove("hidden");
+  showStatus("Sessão encerrada"); hideStatus(1500);
+}
+
+/* ===== VOZ (push-to-talk) ===== */
+let recStream=null, mediaRec=null, recChunks=[], recActive=false;
+btnMic.onclick=()=>{ if(!session_id){ toastMsg("Crie a sessão primeiro."); return; } if(!recActive) startRecordSTT(); else stopRecordSTT(); };
+
+async function startRecordSTT(){
+  if(!navigator.mediaDevices?.getUserMedia){ toastMsg("Sem permissão de microfone."); return; }
+  try{
+    recStream=await navigator.mediaDevices.getUserMedia({ audio:true });
+    mediaRec=new MediaRecorder(recStream,{ mimeType:"audio/webm" });
+    recChunks=[];
+    mediaRec.ondataavailable=e=>{ if(e.data?.size) recChunks.push(e.data); };
+    mediaRec.onstart=()=>{ recActive=true; btnMic.classList.add('rec'); statusEl.classList.add('rec'); showStatus("Gravando…","rec"); };
+    mediaRec.onstop=async ()=>{
+      const blob=new Blob(recChunks,{ type:"audio/webm" }); recChunks=[];
+      try{
+        showStatus("Transcrevendo…");
+        const fd=new FormData(); fd.append("audio",blob,"audio.webm");
+        const rr=await fetchWithTimeout(`${API}/stt?session_id=${encodeURIComponent(session_id)}`,{method:"POST",body:fd}, 15000);
+        const jj=await rr.json(); if(jj?.ok && jj.text){ enqueueSay(jj.text.trim()); } else { showStatus("Falhou transcrição"); hideStatus(1500); }
+      }catch(e){ showStatus("Erro na transcrição"); hideStatus(1500); }
+      finally{
+        try{recStream.getTracks().forEach(t=>t.stop());}catch{}
+        recActive=false; btnMic.classList.remove('rec'); statusEl.classList.remove('rec');
+      }
+    };
+    mediaRec.start();
+  }catch(e){ toastMsg("Não foi possível gravar áudio."); }
+}
+function stopRecordSTT(){ try{ if(mediaRec && recActive) mediaRec.stop(); }catch{} }
+</script>
+</body>
+</html>
