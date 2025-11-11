@@ -19,8 +19,11 @@ load_dotenv()
 # HeyGen
 HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY")
 assert HEYGEN_API_KEY, "Coloque HEYGEN_API_KEY no .env"
+H_HEYGEN = {
+    "Authorization": f"Bearer {HEYGEN_API_KEY}",
+    "Content-Type": "application/json",
+}
 
-H_HEYGEN = {"X-Api-Key": HEYGEN_API_KEY, "Content-Type": "application/json"}
 URL_NEW       = "https://api.heygen.com/v1/streaming.new"
 URL_START     = "https://api.heygen.com/v1/streaming.start"
 URL_TASK      = "https://api.heygen.com/v1/streaming.task"
@@ -285,19 +288,44 @@ def new_session():
         if voice_id:
             body["voice"] = {"voice_id": voice_id}
 
-        r = requests.post(URL_NEW, json=body, headers=H_HEYGEN, timeout=60)
+        r = requests.post(URL_NEW.strip(), json=body, headers=H_HEYGEN, timeout=60)
+        print("[DEBUG STATUS]", r.status_code)
+        print("[DEBUG BODY]", r.text[:1000])
         if not r.ok:
             return jsonify({"ok": False, "error": r.text}), r.status_code
-        data = r.json().get("data", {})
-        session_id, livekit_url, token = data.get("session_id"), data.get("url"), data.get("access_token")
 
+        data = r.json().get("data", {})
+        session_id = data.get("session_id")
+
+        # ✅ Captura de todos os campos possíveis (compatível com novas versões da API)
+        livekit_url = (
+            data.get("realtime_endpoint")
+            or data.get("url")
+            or data.get("livekit_url")
+        )
+        token = (
+            data.get("livekit_agent_token")
+            or data.get("access_token")
+            or data.get("token")
+        )
+
+        # 🧠 Log para depuração se algo vier nulo
+        if not livekit_url or not token:
+            print("[DEBUG HEYGEN] Resposta inesperada:")
+            print(json.dumps(data, indent=2, ensure_ascii=False))
+
+        # Inicia sessão
         s = requests.post(URL_START, json={"session_id": session_id}, headers=H_HEYGEN, timeout=60)
         if not s.ok:
             return jsonify({"ok": False, "error": s.text}), s.status_code
 
         SESSION.update({
-            "id": session_id, "url": livekit_url, "token": token,
-            "language": language, "backstory": bs, "quality": quality,
+            "id": session_id,
+            "url": livekit_url,
+            "token": token,
+            "language": language,
+            "bs": bs,
+            "quality": quality,
             "ends_at": now_ts() + int(minutes * 60),
         })
 
