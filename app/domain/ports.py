@@ -3,7 +3,15 @@ from .models import ContextItem
 
 class IHeygenClient:
     def create_token(self) -> str: ...
-    def new_session(self, avatar_id: str, language: str, backstory: str, quality: str, voice_id: str | None) -> tuple[str, str, str]:
+    def new_session(
+        self,
+        avatar_id: str,
+        language: str,
+        backstory: str,
+        quality: str,
+        voice_id: str | None,
+        context_id: str | None = None,
+    ) -> tuple[str, str, str]:
         """Returns (session_id, livekit_url, access_token)"""
     def start_session(self, session_id: str) -> None: ...
     def task_chat(self, session_id: str, text: str) -> dict: ...
@@ -15,6 +23,7 @@ class ISTTClient:
 class IContextRepository:
     def resolve_avatar_uuid(self, avatar_identifier: str) -> Optional[str]: ...
     def list_contexts_by_avatar(self, avatar_uuid: str) -> List[ContextItem]: ...
+    def list_training_docs_by_avatar(self, avatar_uuid: str): ...
 
 class IStorage:
     def upsert(self, bucket: str, path: str, content_type: str, data: bytes) -> None: ...

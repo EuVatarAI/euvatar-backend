@@ -13,10 +13,13 @@ DOC_INDEX: dict[str, list[dict]] = {}
 @bp.post("/upload")
 def upload():
     c = current_app.container
+    max_bytes = c.settings.upload_max_mb * 1024 * 1024
     if request.method == "POST" and request.files:
         files = request.files.getlist("file")
         added = []
         for f in files:
+            if f.content_length and f.content_length > max_bytes:
+                return jsonify({"ok": False, "error": "file_too_large"}), 413
             fname = f.filename
             dest = os.path.join(c.settings.upload_dir, f"{uuid.uuid4().hex}_{fname}")
             f.save(dest)
@@ -52,6 +55,7 @@ def upload_context_image():
     try:
         if "file" not in request.files:
             return jsonify({"ok": False, "error": "no_file"}), 400
+        max_bytes = c.settings.upload_max_mb * 1024 * 1024
 
         avatar_in = (request.form.get("avatar_id") or "").strip()
         contexto   = (request.form.get("contexto") or "").strip()
@@ -63,6 +67,9 @@ def upload_context_image():
 
         f = request.files["file"]
         fname = safe_filename(f.filename or "media.bin")
+        data = f.stream.read()
+        if len(data) > max_bytes:
+            return jsonify({"ok": False, "error": "file_too_large"}), 413
 
         out, status = upload_uc(
             c.settings, c.storage, c.ctx_repo,
@@ -73,7 +80,7 @@ def upload_context_image():
                 media_type=media_type,
                 filename=fname,
                 content_type=(f.mimetype or "application/octet-stream"),
-                data=f.stream.read()
+                data=data
             )
         )
         return jsonify(out), status

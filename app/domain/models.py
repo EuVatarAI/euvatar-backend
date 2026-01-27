@@ -10,7 +10,13 @@ class LiveSession:
     language: str = "pt-BR"
     backstory: Optional[str] = None
     quality: str = "low"
+    avatar_id: Optional[str] = None
+    api_key: Optional[str] = None
     ends_at_epoch: Optional[int] = None  # epoch seconds
+    started_at_epoch: Optional[int] = None  # epoch seconds
+    training_contexts: List["ContextItem"] = field(default_factory=list)
+    training_docs: List["TrainingDoc"] = field(default_factory=list)
+    training_summary: str = ""
 
 @dataclass
 class BudgetLedger:
@@ -30,3 +36,10 @@ class MediaMatch:
     type: str      # "image"|"video"
     url: str
     caption: Optional[str] = None
+
+@dataclass
+class TrainingDoc:
+    id: str
+    name: str
+    url: str
+    created_at: Optional[datetime] = None

@@ -118,6 +118,17 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
     try:
         _set_busy(session_id, True)
 
+        if settings.avatar_provider == "liveavatar":
+            return SayOutput(
+                ok=False,
+                duration_ms=None,
+                task_id=None,
+                media=None,
+                context_method="none",
+                error="liveavatar_task_chat_not_supported",
+                error_code="not_supported"
+            )
+
         prompt = f"{args.system_prompt}\nUSUÁRIO: {args.user_text}"
         _log("SAY", "task_chat init", {"session": session_id})
 
@@ -175,7 +186,7 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
         if args.avatar_identifier:
             avatar_uuid = ctx_repo.resolve_avatar_uuid(args.avatar_identifier)
             if avatar_uuid:
-                contexts = ctx_repo.list_contexts_by_avatar(avatar_uuid)
+                contexts = getattr(args.session, "training_contexts", None) or ctx_repo.list_contexts_by_avatar(avatar_uuid)
                 names = [c.name for c in contexts]
                 if names:
                     fm = fast_match_context(args.user_text, contexts)

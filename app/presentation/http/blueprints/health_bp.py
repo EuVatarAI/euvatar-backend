@@ -1,22 +1,25 @@
-from flask import Blueprint, jsonify, current_app
+from flask import Blueprint, jsonify, current_app, request
 
 bp = Blueprint("health", __name__)
 
 @bp.get("/health")
 def health():
     c = current_app.container
+    client_id = request.headers.get("X-Client-Id", "default")
+    session = c.get_session(client_id)
+    budget = c.get_budget(client_id)
     return jsonify({
         "ok": True,
         "has_api_key": True,
         "using_service_role": True,
         "avatar": c.settings.heygen_default_avatar,
-        "session_active": bool(c.session.session_id),
-        "quality": c.session.quality,
-        "ends_at": c.session.ends_at_epoch,
+        "session_active": bool(session.session_id),
+        "quality": session.quality,
+        "ends_at": session.ends_at_epoch,
         "bucket": c.settings.supabase_bucket,
         "budget": {
-            "credits_per_session": c.budget.credits_per_session,
-            "total_credits_spent": c.budget.total_credits_spent,
-            "sessions": len(c.budget.sessions)
+            "credits_per_session": budget.credits_per_session,
+            "total_credits_spent": budget.total_credits_spent,
+            "sessions": len(budget.sessions)
         }
     })

@@ -25,8 +25,16 @@ class HeygenClient(IHeygenClient):
             raise RuntimeError("no_token")
         return token
 
-    def new_session(self, avatar_id: str, language: str, backstory: str, quality: str,
-                    voice_id: str | None, activity_idle_timeout: int = 120):
+    def new_session(
+        self,
+        avatar_id: str,
+        language: str,
+        backstory: str,
+        quality: str,
+        voice_id: str | None,
+        context_id: str | None = None,
+        activity_idle_timeout: int = 120,
+    ):
         body = {
             "version": "v2",
             "avatar_id": avatar_id,

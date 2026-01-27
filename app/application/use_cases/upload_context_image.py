@@ -18,7 +18,8 @@ class UploadInput:
 
 def execute(settings: Settings, storage: IStorage, repo: IContextRepository, args: UploadInput) -> dict:
     avatar_uuid = repo.resolve_avatar_uuid(args.avatar_identifier)
-    if not avatar_uuid: return {"ok": False, "error": "avatar_not_found"}, 404
+    if not avatar_uuid:
+        return {"ok": False, "error": "avatar_not_found"}, 404
 
     media_type = args.media_type if args.media_type in ("image","video") else "image"
     fname = args.filename

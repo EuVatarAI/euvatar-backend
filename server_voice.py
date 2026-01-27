@@ -1,6 +1,6 @@
 # server_voice.py
 # -*- coding: utf-8 -*-
-import os, re, time, unicodedata
+import os, re, time, unicodedata, json
 import uuid as _uuid
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, send_from_directory
@@ -652,45 +652,7 @@ def upload_context_image():
         return jsonify({"ok": True, "contexto": contexto, "url_imagem": public_url, "avatar_id": avatar_uuid})
     except Exception as e:
         return jsonify({"ok": False, "error": f"upload_exception:{e}"}), 500
-import base64, json
-
-def _jwt_role(token: str):
-    try:
-        payload = token.split('.')[1] + '=='
-        return json.loads(base64.urlsafe_b64decode(payload.encode()).decode()).get('role')
-    except Exception:
-        return None
-
-@app.get("/debug/env")
-def debug_env():
-    # NÃO loga a chave inteira; só o papel e os últimos 10 chars
-    tail = (SUPABASE_SERVICE_KEY[-10:] if SUPABASE_SERVICE_KEY else None)
-    return jsonify({
-        "app": "server_voice",
-        "sb_role": _jwt_role(SUPABASE_SERVICE_KEY),  # deve ser "service_role"
-        "bucket": SUPABASE_BUCKET,
-        "url": SUPABASE_URL,
-        "key_tail": tail,
-    })
-
-@app.post("/debug/storage-selftest")
-def debug_storage_selftest():
-    try:
-        up_url = f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/debug/ping_from_flask.txt"
-        r = requests.post(
-            up_url,
-            headers={
-                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-                "apikey": SUPABASE_SERVICE_KEY,
-                "x-upsert": "true",
-                "Content-Type": "text/plain"
-            },
-            data=b"hello-from-flask",
-            timeout=30
-        )
-        return jsonify({"ok": r.ok, "status": r.status_code, "text": r.text[:300]})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
 # ================== Run ============================
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5001, debug=True)
+    debug = os.getenv("APP_DEBUG", "false").lower() == "true"
+    app.run(host="127.0.0.1", port=5001, debug=debug)
