@@ -51,6 +51,9 @@ class LiveAvatarClient(IHeygenClient):
             payload["avatar_persona"]["voice_id"] = voice_id
         if context_id:
             payload["avatar_persona"]["context_id"] = context_id
+        elif backstory:
+            # fallback: tenta usar backstory como prompt quando não há context_id
+            payload["avatar_persona"]["prompt"] = backstory
 
         # LiveAvatar usa session token antes de iniciar
         token_resp = requests.post(
@@ -62,6 +65,20 @@ class LiveAvatarClient(IHeygenClient):
             json=payload,
             timeout=30,
         )
+
+        if not token_resp.ok and backstory and not context_id:
+            # Se a API não aceitar prompt, tenta novamente sem ele
+            payload["avatar_persona"].pop("prompt", None)
+            token_resp = requests.post(
+                URL_SESSION_TOKEN,
+                headers={
+                    "X-API-KEY": self._s.liveavatar_api_key,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=30,
+            )
+
         token_resp.raise_for_status()
 
         token_data = token_resp.json() or {}

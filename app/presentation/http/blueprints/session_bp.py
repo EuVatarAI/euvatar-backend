@@ -33,6 +33,7 @@ from app.infrastructure.liveavatar_client import LiveAvatarClient
 bp = Blueprint("session", __name__)
 
 URL_KEEPALIVE = "https://api.heygen.com/v1/streaming.keep_alive"
+URL_LIVEAVATAR_CONTEXTS = "https://api.liveavatar.com/v1/contexts"
 
 # ============== helpers de log ==============
 def _log(kind: str, msg: str, data=None):
@@ -307,7 +308,7 @@ def _fetch_avatar_credentials_rows(s: Settings) -> list:
     try:
         r = requests.get(
             base,
-            params={"select": "api_key,avatar_id,avatar_external_id"},
+            params={"select": "api_key,avatar_id,avatar_external_id,voice_id,context_id"},
             headers=headers,
             timeout=6,
         )
@@ -322,23 +323,34 @@ def _fetch_avatar_credentials_rows(s: Settings) -> list:
     for row in rows:
         api_key = _maybe_decode_api_key(row.get("api_key"))
         avatar_external_id = _maybe_decode_external_id(row.get("avatar_external_id"))
+        voice_id = _maybe_decode_value(row.get("voice_id"))
+        context_id = _maybe_decode_value(row.get("context_id"))
         if not api_key or not avatar_external_id:
             continue
         decoded.append({
             "api_key": api_key,
             "avatar_id": row.get("avatar_id"),
             "avatar_external_id": avatar_external_id,
+            "voice_id": voice_id,
+            "context_id": context_id,
         })
     return decoded
 
 
-def _resolve_avatar_api_key(settings: Settings, avatar_id: str | None) -> str | None:
+def _resolve_avatar_credentials(settings: Settings, avatar_id: str | None) -> dict | None:
     if not avatar_id:
         return None
     rows = _fetch_avatar_credentials_rows(settings)
     for row in rows:
         if avatar_id == row.get("avatar_id") or avatar_id == row.get("avatar_external_id"):
-            return row.get("api_key")
+            return row
+    return None
+
+
+def _resolve_avatar_api_key(settings: Settings, avatar_id: str | None) -> str | None:
+    creds = _resolve_avatar_credentials(settings, avatar_id)
+    if creds:
+        return creds.get("api_key")
     return None
 
 
@@ -381,6 +393,98 @@ def _maybe_decode_external_id(val: str | None) -> str | None:
     except Exception:
         pass
     return v
+
+
+def _maybe_decode_value(val: str | None) -> str | None:
+    if not val:
+        return val
+    v = val.strip()
+    try:
+        decoded = base64.b64decode(v).decode()
+        if decoded:
+            return decoded
+    except Exception:
+        pass
+    return v
+
+
+def _encode_cred_value(val: str) -> str:
+    return base64.b64encode(val.encode()).decode()
+
+
+def _update_avatar_context_id(settings: Settings, avatar_id: str, context_id: str) -> None:
+    if not avatar_id or not context_id:
+        return
+    try:
+        url = settings.supabase_url.rstrip("/") + "/rest/v1/avatar_credentials"
+        headers = _supabase_headers(settings)
+        payload = {"context_id": _encode_cred_value(context_id), "updated_at": datetime.now(timezone.utc).isoformat()}
+        requests.patch(
+            url,
+            params={"avatar_id": f"eq.{avatar_id}"},
+            headers=headers,
+            json=payload,
+            timeout=6,
+        )
+    except Exception as e:
+        _log("SUPA", "context_update_err", {"err": str(e)[:120]})
+
+
+def _create_liveavatar_context(
+    api_key: str,
+    backstory: str,
+    language: str,
+    name: str | None = None,
+    opening_intro: str | None = None,
+) -> str | None:
+    if not backstory:
+        return None
+    opening_text = (opening_intro or "Olá! Como posso te ajudar?").strip()
+    base_name = name or "Euvatar Context"
+    payload = {
+        "name": base_name,
+        "language": language or "en",
+        "prompt": backstory,
+        "opening_text": opening_text,
+    }
+    try:
+        res = requests.post(
+            URL_LIVEAVATAR_CONTEXTS,
+            headers={
+                "X-API-KEY": api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=payload,
+            timeout=20,
+        )
+        if not res.ok:
+            body = res.text[:200]
+            # Se nome já existe, tenta com sufixo único
+            if res.status_code == 400 and "name" in body and "already exists" in body:
+                unique_name = f"{base_name}-{int(time.time())}"
+                payload["name"] = unique_name
+                res = requests.post(
+                    URL_LIVEAVATAR_CONTEXTS,
+                    headers={
+                        "X-API-KEY": api_key,
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    },
+                    json=payload,
+                    timeout=20,
+                )
+            if not res.ok:
+                _log("LIVEAVATAR", "context_create_err", {"status": res.status_code, "body": res.text[:200]})
+                return None
+        data = res.json() or {}
+        context_id = data.get("id") or data.get("data", {}).get("id")
+        if context_id:
+            _log("LIVEAVATAR", "context_created", {"context_id": context_id})
+        return context_id
+    except Exception as e:
+        _log("LIVEAVATAR", "context_create_exc", {"err": str(e)[:120]})
+        return None
 
 
 def _log_avatar_session_start(s: Settings, avatar_id: str, session_id: str, started_at_epoch: int):
@@ -874,14 +978,24 @@ def new_session():
             _log("RESUME", "in(/new)", {"session_id": sid})
             # receber avatar_id vindo do front
             avatar_id = request.args.get("avatar_id") or c.settings.heygen_default_avatar
-            api_key = _resolve_avatar_api_key(c.settings, avatar_id) or c.settings.heygen_api_key
+            creds = _resolve_avatar_credentials(c.settings, avatar_id)
+            api_key = (creds.get("api_key") if creds else None) or c.settings.heygen_api_key
             heygen_client = _heygen_client_for_key(c.settings, api_key)
 
             if c.settings.avatar_provider == "liveavatar":
-                if not voice_id and c.settings.liveavatar_voice_id:
-                    voice_id = c.settings.liveavatar_voice_id
-                if not context_id and c.settings.liveavatar_context_id:
-                    context_id = c.settings.liveavatar_context_id
+                if not voice_id:
+                    voice_id = (creds or {}).get("voice_id") or c.settings.liveavatar_voice_id
+                if not context_id:
+                    context_id = (creds or {}).get("context_id") or c.settings.liveavatar_context_id
+                if not context_id and backstory_param:
+                    context_id = _create_liveavatar_context(
+                        api_key=api_key,
+                        backstory=backstory_param,
+                        language=language,
+                        name=f"euvatar-{avatar_id}",
+                    )
+                    if context_id:
+                        _update_avatar_context_id(c.settings, avatar_id, context_id)
 
             out = create_session_uc(
                 heygen_client, budget,
@@ -927,14 +1041,24 @@ def new_session():
         _log("NEW", "in", {"language": language, "persona": persona, "quality": quality, "minutes": minutes})
 
         avatar_id_in = request.args.get("avatar_id") or c.settings.heygen_default_avatar
-        api_key = _resolve_avatar_api_key(c.settings, avatar_id_in) or c.settings.heygen_api_key
+        creds = _resolve_avatar_credentials(c.settings, avatar_id_in)
+        api_key = (creds.get("api_key") if creds else None) or c.settings.heygen_api_key
         heygen_client = _heygen_client_for_key(c.settings, api_key)
         avatar_id = _resolve_avatar_external_id(c.settings, avatar_id_in)
         if c.settings.avatar_provider == "liveavatar":
-            if not voice_id and c.settings.liveavatar_voice_id:
-                voice_id = c.settings.liveavatar_voice_id
-            if not context_id and c.settings.liveavatar_context_id:
-                context_id = c.settings.liveavatar_context_id
+            if not voice_id:
+                voice_id = (creds or {}).get("voice_id") or c.settings.liveavatar_voice_id
+            if not context_id:
+                context_id = (creds or {}).get("context_id") or c.settings.liveavatar_context_id
+            if not context_id and backstory_param:
+                context_id = _create_liveavatar_context(
+                    api_key=api_key,
+                    backstory=backstory_param,
+                    language=language,
+                    name=f"euvatar-{avatar_id_in}",
+                )
+                if context_id:
+                    _update_avatar_context_id(c.settings, avatar_id_in, context_id)
 
         out = create_session_uc(
             heygen_client, budget,
@@ -976,6 +1100,48 @@ def new_session():
     except Exception as e:
         _log("ERR", "new_exception", {"ms": int((time.time()-t0)*1000), "e": str(e)})
         return jsonify({"ok": False, "error": f"new_exception: {e}"}), 500
+
+
+@bp.post("/liveavatar/context")
+def liveavatar_context_create():
+    """
+    Cria/atualiza contexto do LiveAvatar a partir do backstory e salva o context_id no avatar_credentials.
+    """
+    t0 = time.time()
+    try:
+        c = current_app.container
+        j = request.get_json(force=True) or {}
+        avatar_id = (j.get("avatar_id") or "").strip()
+        backstory = (j.get("backstory") or "").strip()
+        language = (j.get("language") or "pt-BR").strip()
+        name = (j.get("name") or "").strip()
+        opening_intro = (j.get("opening_intro") or "").strip()
+
+        if not avatar_id or not backstory:
+            return jsonify({"ok": False, "error": "missing_params"}), 400
+
+        creds = _resolve_avatar_credentials(c.settings, avatar_id)
+        api_key = (creds.get("api_key") if creds else None) or c.settings.liveavatar_api_key
+        if not api_key:
+            return jsonify({"ok": False, "error": "missing_api_key"}), 400
+
+        context_id = _create_liveavatar_context(
+            api_key=api_key,
+            backstory=backstory,
+            language=language,
+            name=name or f"euvatar-{avatar_id}",
+            opening_intro=opening_intro or None,
+        )
+        if not context_id:
+            return jsonify({"ok": False, "error": "context_create_failed"}), 502
+
+        _update_avatar_context_id(c.settings, avatar_id, context_id)
+
+        _log("LIVEAVATAR", "context_sync_ok", {"ms": int((time.time()-t0)*1000), "avatar_id": avatar_id})
+        return jsonify({"ok": True, "context_id": context_id})
+    except Exception as e:
+        _log("ERR", "context_sync_exception", {"ms": int((time.time()-t0)*1000), "e": str(e)})
+        return jsonify({"ok": False, "error": f"context_sync_exception: {e}"}), 500
 
 
 
