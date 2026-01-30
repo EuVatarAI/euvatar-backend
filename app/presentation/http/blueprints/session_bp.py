@@ -257,7 +257,7 @@ def _supabase_headers(s: Settings) -> dict:
 
 def _fetch_avatar_credentials(s: Settings):
     """
-    Busca API key/mapeamento em Supabase. Se falhar ou não houver, usa a key do .env como fallback.
+    Busca API key/mapeamento em Supabase.
     """
     base = s.supabase_url.rstrip("/") + "/rest/v1/avatar_credentials"
     headers = _supabase_headers(s)
@@ -291,10 +291,6 @@ def _fetch_avatar_credentials(s: Settings):
             _log("SUPA", "map_fetch_err", {"status": rmap.status_code, "body": rmap.text[:120]})
     except Exception as e:
         _log("SUPA", "map_fetch_exc", {"err": str(e)[:120]})
-
-    # fallback: usa HEYGEN_API_KEY do .env se não achar no Supabase
-    if not main or not main.get("api_key"):
-        main = {"api_key": s.heygen_api_key}
 
     return main, mapping
 
@@ -356,15 +352,24 @@ def _resolve_avatar_api_key(settings: Settings, avatar_id: str | None) -> str | 
 
 
 def _heygen_client_for_key(settings: Settings, api_key: str | None):
-    if settings.avatar_provider == "liveavatar":
-        if api_key:
-            return LiveAvatarClient(replace(settings, liveavatar_api_key=api_key))
-        return LiveAvatarClient(settings)
     if not api_key:
-        return HeygenClient(settings)
+        return None
+    if settings.avatar_provider == "liveavatar":
+        return LiveAvatarClient(replace(settings, liveavatar_api_key=api_key))
     if api_key == settings.heygen_api_key:
         return HeygenClient(settings)
     return HeygenClient(replace(settings, heygen_api_key=api_key))
+
+
+def _require_api_key(settings: Settings, avatar_id: str | None, session: LiveSession | None = None):
+    api_key = getattr(session, "api_key", None) if session else None
+    creds = None
+    if not api_key and avatar_id:
+        creds = _resolve_avatar_credentials(settings, avatar_id)
+        api_key = (creds.get("api_key") if creds else None)
+    if not api_key:
+        return None, creds, (jsonify({"ok": False, "error": "missing_api_key_for_client"}), 400)
+    return api_key, creds, None
 
 
 def _maybe_decode_api_key(val: str | None) -> str | None:
@@ -769,12 +774,7 @@ def credits():
     cred_rows = _fetch_avatar_credentials_rows(s)
     keys = sorted({row.get("api_key") for row in cred_rows if row.get("api_key")})
 
-    # fallback: usa HEYGEN_API_KEY do .env se não achar no Supabase
-    if not keys and s.heygen_api_key:
-        keys = [s.heygen_api_key]
-        _log("CRED", "using_env_key_fallback", {"len": len(s.heygen_api_key or ""), "starts": (s.heygen_api_key or "")[:6]})
-    else:
-        _log("CRED", "using_keys_from_supa", {"count": len(keys)})
+    _log("CRED", "using_keys_from_supa", {"count": len(keys)})
 
     mapping = [{"avatar_id": row.get("avatar_id"), "avatar_external_id": row.get("avatar_external_id")} for row in cred_rows]
 
@@ -787,7 +787,7 @@ def credits():
         )
 
     if not keys:
-        return jsonify({"error": "Credenciais não configuradas", "avatarUsage": []}), 400
+        return jsonify({"error": "missing_api_key_for_client", "avatarUsage": []}), 400
 
     remaining_quota_total = 0.0
     quota_ok = False
@@ -880,10 +880,8 @@ def list_heygen_avatars():
     api_key = None
     if creds and creds.get("api_key"):
         api_key = _maybe_decode_api_key(creds.get("api_key"))
-    elif s.heygen_api_key:
-        api_key = _maybe_decode_api_key(s.heygen_api_key)
     if not api_key:
-        return jsonify({"error": "Credenciais não configuradas"}), 400
+        return jsonify({"error": "missing_api_key_for_client"}), 400
     if s.avatar_provider == "liveavatar":
         return list_liveavatar_avatars()
     try:
@@ -920,10 +918,8 @@ def list_liveavatar_avatars():
     api_key = None
     if creds and creds.get("api_key"):
         api_key = _maybe_decode_api_key(creds.get("api_key"))
-    elif s.liveavatar_api_key:
-        api_key = s.liveavatar_api_key
     if not api_key:
-        return jsonify({"error": "Credenciais não configuradas"}), 400
+        return jsonify({"error": "missing_api_key_for_client"}), 400
 
     def _fetch(url: str):
         return requests.get(
@@ -962,8 +958,13 @@ def create_session_token():
     try:
         c = current_app.container
         avatar_id = request.args.get("avatar_id") or ""
-        api_key = _resolve_avatar_api_key(c.settings, avatar_id) or c.settings.heygen_api_key
-        token = _heygen_client_for_key(c.settings, api_key).create_token()
+        api_key, _, err = _require_api_key(c.settings, avatar_id)
+        if err:
+            return err
+        client = _heygen_client_for_key(c.settings, api_key)
+        if not client:
+            return jsonify({"ok": False, "error": "missing_api_key_for_client"}), 400
+        token = client.create_token()
         _log("TOKEN", "create ok", {"ms": int((time.time()-t0)*1000)})
         return jsonify({"ok": True, "token": token})
     except Exception as e:
@@ -977,10 +978,9 @@ def liveavatar_voices():
         c = current_app.container
         avatar_id = (request.args.get("avatar_id") or "").strip()
         voice_type = (request.args.get("voice_type") or "public").strip()
-        creds = _resolve_avatar_credentials(c.settings, avatar_id) if avatar_id else None
-        api_key = (creds.get("api_key") if creds else None) or c.settings.liveavatar_api_key
-        if not api_key:
-            return jsonify({"ok": False, "error": "missing_api_key"}), 400
+        api_key, _, err = _require_api_key(c.settings, avatar_id)
+        if err:
+            return err
 
         res = requests.get(
             URL_LIVEAVATAR_VOICES,
@@ -1038,7 +1038,9 @@ def new_session():
             # receber avatar_id vindo do front
             avatar_id = request.args.get("avatar_id") or c.settings.heygen_default_avatar
             creds = _resolve_avatar_credentials(c.settings, avatar_id)
-            api_key = (creds.get("api_key") if creds else None) or c.settings.heygen_api_key
+            api_key = (creds.get("api_key") if creds else None)
+            if not api_key:
+                return jsonify({"ok": False, "error": "missing_api_key_for_client"}), 400
             heygen_client = _heygen_client_for_key(c.settings, api_key)
 
             if c.settings.avatar_provider == "liveavatar":
@@ -1101,7 +1103,9 @@ def new_session():
 
         avatar_id_in = request.args.get("avatar_id") or c.settings.heygen_default_avatar
         creds = _resolve_avatar_credentials(c.settings, avatar_id_in)
-        api_key = (creds.get("api_key") if creds else None) or c.settings.heygen_api_key
+        api_key = (creds.get("api_key") if creds else None)
+        if not api_key:
+            return jsonify({"ok": False, "error": "missing_api_key_for_client"}), 400
         heygen_client = _heygen_client_for_key(c.settings, api_key)
         avatar_id = _resolve_avatar_external_id(c.settings, avatar_id_in)
         if c.settings.avatar_provider == "liveavatar":
@@ -1179,10 +1183,9 @@ def liveavatar_context_create():
         if not avatar_id or not backstory:
             return jsonify({"ok": False, "error": "missing_params"}), 400
 
-        creds = _resolve_avatar_credentials(c.settings, avatar_id)
-        api_key = (creds.get("api_key") if creds else None) or c.settings.liveavatar_api_key
-        if not api_key:
-            return jsonify({"ok": False, "error": "missing_api_key"}), 400
+        api_key, _, err = _require_api_key(c.settings, avatar_id)
+        if err:
+            return err
 
         context_id = _create_liveavatar_context(
             api_key=api_key,
@@ -1246,8 +1249,12 @@ def say():
 
         api_key = getattr(session, "api_key", None)
         if not api_key:
-            api_key = _resolve_avatar_api_key(c.settings, avatar_id or getattr(session, "avatar_id", None)) or c.settings.heygen_api_key
+            api_key, _, err = _require_api_key(c.settings, avatar_id or getattr(session, "avatar_id", None), session=session)
+            if err:
+                return err
         heygen_client = _heygen_client_for_key(c.settings, api_key)
+        if not heygen_client:
+            return jsonify({"ok": False, "error": "missing_api_key_for_client"}), 400
         out: SayOutput = say_uc(c.settings, heygen_client, c.ctx_repo, SayInput(session, text, sys, avatar_identifier=avatar_id))
 
         if not out.ok:
@@ -1291,8 +1298,13 @@ def keepalive():
         sid = session.session_id
         # você pode guardar isso no Settings se quiser expor na UI
         idle = getattr(c.settings, "heygen_activity_idle_timeout", 120)
-        api_key = getattr(session, "api_key", None) or c.settings.heygen_api_key
-        r = _heygen_client_for_key(c.settings, api_key).keep_alive(sid, activity_idle_timeout=idle)
+        api_key, _, err = _require_api_key(c.settings, getattr(session, "avatar_id", None), session=session)
+        if err:
+            return err
+        client = _heygen_client_for_key(c.settings, api_key)
+        if not client:
+            return jsonify({"ok": False, "error": "missing_api_key_for_client"}), 400
+        r = client.keep_alive(sid, activity_idle_timeout=idle)
 
         try:
             body = r.json()
@@ -1354,8 +1366,12 @@ def resume_livekit():
             left = max(1, int(session.ends_at_epoch - time.time()))
             mins_left = max(0.5, left / 60.0)
         
-        api_key = getattr(session, "api_key", None) or c.settings.heygen_api_key
+        api_key, _, err = _require_api_key(c.settings, getattr(session, "avatar_id", None), session=session)
+        if err:
+            return err
         heygen_client = _heygen_client_for_key(c.settings, api_key)
+        if not heygen_client:
+            return jsonify({"ok": False, "error": "missing_api_key_for_client"}), 400
         avatar_id = getattr(session, "avatar_id", None) or c.settings.heygen_default_avatar
         out = create_session_uc(
             heygen_client, budget,
@@ -1402,8 +1418,13 @@ def interrupt():
         session_id = (request.get_json(force=True) or {}).get("session_id") or getattr(session, "session_id", None)
         if not session_id:
             return jsonify({"ok": False, "error": "missing_session_id"}), 400
-        api_key = getattr(session, "api_key", None) or c.settings.heygen_api_key
-        interrupt_uc(_heygen_client_for_key(c.settings, api_key), InterruptInput(session_id))
+        api_key, _, err = _require_api_key(c.settings, getattr(session, "avatar_id", None), session=session)
+        if err:
+            return err
+        client = _heygen_client_for_key(c.settings, api_key)
+        if not client:
+            return jsonify({"ok": False, "error": "missing_api_key_for_client"}), 400
+        interrupt_uc(client, InterruptInput(session_id))
         _log("INT", "ok", {"ms": int((time.time()-t0)*1000), "session": session_id})
         return jsonify({"ok": True})
     except Exception as e:
