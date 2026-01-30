@@ -34,6 +34,7 @@ bp = Blueprint("session", __name__)
 
 URL_KEEPALIVE = "https://api.heygen.com/v1/streaming.keep_alive"
 URL_LIVEAVATAR_CONTEXTS = "https://api.liveavatar.com/v1/contexts"
+URL_LIVEAVATAR_VOICES = "https://api.liveavatar.com/v1/voices"
 
 # ============== helpers de log ==============
 def _log(kind: str, msg: str, data=None):
@@ -629,6 +630,30 @@ def _resolve_avatar_external_id(settings: Settings, avatar_id: str) -> str:
     return avatar_id
 
 
+def _fetch_avatar_voice_model(settings: Settings, avatar_id: str) -> str | None:
+    if not avatar_id:
+        return None
+    # só tenta se parecer UUID do Supabase
+    if "-" not in avatar_id:
+        return None
+    try:
+        url = settings.supabase_url.rstrip("/") + "/rest/v1/avatars"
+        headers = _supabase_headers(settings)
+        r = requests.get(
+            url,
+            params={"select": "voice_model", "id": f"eq.{avatar_id}", "limit": 1},
+            headers=headers,
+            timeout=6,
+        )
+        if r.ok:
+            data = (r.json() or [])
+            if data:
+                return data[0].get("voice_model")
+    except Exception as e:
+        _log("SUPA", "avatar_voice_fetch_err", {"err": str(e)[:120]})
+    return None
+
+
 def _calc_credits_payload(remaining_quota: float):
     """
     Replica a lógica da edge function:
@@ -946,6 +971,40 @@ def create_session_token():
         return jsonify({"ok": False, "error": f"token_exception: {e}"}), 500
 
 
+@bp.get("/liveavatar/voices")
+def liveavatar_voices():
+    try:
+        c = current_app.container
+        avatar_id = (request.args.get("avatar_id") or "").strip()
+        voice_type = (request.args.get("voice_type") or "public").strip()
+        creds = _resolve_avatar_credentials(c.settings, avatar_id) if avatar_id else None
+        api_key = (creds.get("api_key") if creds else None) or c.settings.liveavatar_api_key
+        if not api_key:
+            return jsonify({"ok": False, "error": "missing_api_key"}), 400
+
+        res = requests.get(
+            URL_LIVEAVATAR_VOICES,
+            headers={
+                "X-API-KEY": api_key,
+                "Accept": "application/json",
+            },
+            params={"page": 1, "page_size": 100, "voice_type": voice_type},
+            timeout=20,
+        )
+        if not res.ok:
+            _log("LIVEAVATAR", "voices_err", {"status": res.status_code, "body": res.text[:200]})
+            return jsonify({"ok": False, "error": "voices_fetch_failed"}), 502
+        data = res.json() or {}
+        if isinstance(data.get("data"), dict):
+            voices = data["data"].get("results") or []
+        else:
+            voices = data.get("voices") or data.get("data") or data
+        return jsonify({"ok": True, "voices": voices})
+    except Exception as e:
+        _log("ERR", "voices_exception", {"e": str(e)[:200]})
+        return jsonify({"ok": False, "error": f"voices_exception: {e}"}), 500
+
+
 @bp.get("/new")
 def new_session():
     t0 = time.time()
@@ -984,7 +1043,7 @@ def new_session():
 
             if c.settings.avatar_provider == "liveavatar":
                 if not voice_id:
-                    voice_id = (creds or {}).get("voice_id") or c.settings.liveavatar_voice_id
+                    voice_id = _fetch_avatar_voice_model(c.settings, avatar_id) or (creds or {}).get("voice_id") or c.settings.liveavatar_voice_id
                 if not context_id:
                     context_id = (creds or {}).get("context_id") or c.settings.liveavatar_context_id
                 if not context_id and backstory_param:
@@ -1047,7 +1106,7 @@ def new_session():
         avatar_id = _resolve_avatar_external_id(c.settings, avatar_id_in)
         if c.settings.avatar_provider == "liveavatar":
             if not voice_id:
-                voice_id = (creds or {}).get("voice_id") or c.settings.liveavatar_voice_id
+                voice_id = _fetch_avatar_voice_model(c.settings, avatar_id_in) or (creds or {}).get("voice_id") or c.settings.liveavatar_voice_id
             if not context_id:
                 context_id = (creds or {}).get("context_id") or c.settings.liveavatar_context_id
             if not context_id and backstory_param:

@@ -45,16 +45,20 @@ class ContextRepository(IContextRepository):
             return None
 
     def list_contexts_by_avatar(self, avatar_uuid: str) -> List[ContextItem]:
-        rows = get_json(self._s, "contexts", "name,media_url,media_type,keywords_text,enabled", {"avatar_id": f"eq.{avatar_uuid}"})
+        rows = get_json(self._s, "contexts", "name,media_url,media_type,keywords_text,description,enabled", {"avatar_id": f"eq.{avatar_uuid}"})
         items: List[ContextItem] = []
         for r in rows:
             if "enabled" in r and r["enabled"] is not None and (not r["enabled"]):
                 continue
+            kws = (r.get("keywords_text") or "").strip()
+            desc = (r.get("description") or "").strip()
+            if desc and desc not in kws:
+                kws = f"{kws}; {desc}".strip("; ").strip()
             items.append(ContextItem(
                 name=(r.get("name") or "").strip(),
                 media_url=(r.get("media_url") or "").strip(),
                 media_type=(r.get("media_type") or "image").strip() or "image",
-                keywords_text=(r.get("keywords_text") or "").strip()
+                keywords_text=kws
             ))
         return [c for c in items if c.name]
 

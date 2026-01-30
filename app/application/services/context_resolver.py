@@ -17,7 +17,13 @@ def fast_match_context(user_text: str, contexts: List[ContextItem]) -> Optional[
                     return c.name
         kws = normalize(c.keywords_text or "")
         if kws:
-            for k in [p.strip() for p in re_split(kws)]:
+            parts = [p.strip() for p in re_split(kws)]
+            # also split by whitespace to catch phrases like "quando usuario fala sobre chocolate"
+            for p in list(parts):
+                parts.extend(p.split())
+            for k in parts:
+                if len(k) < 3:
+                    continue
                 if k and k in text:
                     return c.name
     return None
