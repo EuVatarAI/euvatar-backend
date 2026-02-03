@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from math import floor
 from urllib.parse import urlparse
-from flask import Blueprint, request, jsonify, current_app, send_from_directory
+from flask import Blueprint, request, jsonify, current_app, send_from_directory, g
 from app.core.settings import Settings
 
 from app.application.use_cases.create_session import (
@@ -63,11 +63,8 @@ def _http_from_error_code(code: str | None) -> int:
 # ===========================================
 
 def _client_id():
-    # client_id vem de cabeçalho ou query para isolar sessões por cliente
-    return (request.headers.get("X-Client-Id")
-            or request.args.get("client_id")
-            or (request.get_json(silent=True) or {}).get("client_id")
-            or "default")
+    # client_id vem do token validado (JWT)
+    return getattr(g, "client_id", None) or "default"
 
 
 # compat: alguns deploys podem não ter métodos get_session/get_budget no container (instâncias antigas)
@@ -1341,7 +1338,7 @@ def keepalive():
 def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Client-Id"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return resp
 
 

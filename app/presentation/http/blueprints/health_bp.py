@@ -1,11 +1,11 @@
-from flask import Blueprint, jsonify, current_app, request
+from flask import Blueprint, jsonify, current_app, request, g
 
 bp = Blueprint("health", __name__)
 
 @bp.get("/health")
 def health():
     c = current_app.container
-    client_id = request.headers.get("X-Client-Id", "default")
+    client_id = getattr(g, "client_id", None) or "default"
     session = c.get_session(client_id)
     budget = c.get_budget(client_id)
     return jsonify({
