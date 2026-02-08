@@ -1,3 +1,5 @@
+"""Media upload and retrieval endpoints."""
+
 import os, uuid, re
 from flask import Blueprint, request, jsonify, current_app, send_from_directory
 from app.shared.text_utils import tokenize_filename_terms, safe_filename

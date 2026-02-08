@@ -1,3 +1,5 @@
+"""Use-case for speech-to-text transcription."""
+
 from dataclasses import dataclass
 from app.domain.ports import ISTTClient
 

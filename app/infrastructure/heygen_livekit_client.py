@@ -1,3 +1,5 @@
+"""Client for HeyGen LiveKit session creation."""
+
 # app/infrastructure/heygen_livekit_client.py
 
 import requests

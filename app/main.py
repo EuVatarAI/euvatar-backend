@@ -1,3 +1,5 @@
+"""Application entrypoint for the Flask HTTP server."""
+
 from __future__ import annotations
 from dotenv import load_dotenv
 from app.presentation.http.server import create_app

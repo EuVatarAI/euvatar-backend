@@ -1,3 +1,5 @@
+"""Context trigger resolution endpoints for media overlays."""
+
 from flask import Blueprint, request, jsonify, current_app
 from app.application.use_cases.resolve_context import execute as resolve_uc, ResolveInput
 

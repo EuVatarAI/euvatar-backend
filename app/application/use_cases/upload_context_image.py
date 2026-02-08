@@ -1,3 +1,5 @@
+"""Use-case for uploading context images and metadata."""
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from app.core.settings import Settings

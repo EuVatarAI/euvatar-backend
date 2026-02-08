@@ -1,3 +1,5 @@
+"""Application settings loaded from environment variables."""
+
 import os
 from urllib.parse import urlparse
 from dataclasses import dataclass

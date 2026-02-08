@@ -1,3 +1,5 @@
+"""Use-case for matching context triggers and returning media."""
+
 from dataclasses import dataclass
 import time
 from app.domain.ports import IContextRepository

@@ -1,3 +1,5 @@
+"""HTTP client for LiveAvatar REST endpoints."""
+
 import requests
 from typing import Tuple
 
@@ -20,6 +22,28 @@ class LiveAvatarClient(IHeygenClient):
 
     def __init__(self, settings: Settings):
         self._s = settings
+    
+    def _mask_key(self, key: str | None) -> str:
+        if not key:
+            return ""
+        if len(key) <= 6:
+            return "***"
+        return f"{key[:3]}***{key[-3:]}"
+
+    def _log_token_error(self, payload: dict, resp: requests.Response, context: str):
+        try:
+            body = resp.text[:1000]
+        except Exception:
+            body = "<unreadable>"
+        print(
+            "[LIVEAVATAR][TOKEN_ERROR] "
+            f"context={context} "
+            f"status={resp.status_code} "
+            f"url={resp.url} "
+            f"api_key={self._mask_key(self._s.liveavatar_api_key)} "
+            f"payload={payload} "
+            f"body={body}"
+        )
 
     def create_token(self) -> str:
         raise RuntimeError("liveavatar: create_token não é suportado neste fluxo")
@@ -66,6 +90,9 @@ class LiveAvatarClient(IHeygenClient):
             timeout=30,
         )
 
+        if not token_resp.ok:
+            self._log_token_error(payload, token_resp, "initial")
+
         if not token_resp.ok and backstory and not context_id:
             # Se a API não aceitar prompt, tenta novamente sem ele
             payload["avatar_persona"].pop("prompt", None)
@@ -78,6 +105,8 @@ class LiveAvatarClient(IHeygenClient):
                 json=payload,
                 timeout=30,
             )
+            if not token_resp.ok:
+                self._log_token_error(payload, token_resp, "retry_without_prompt")
 
         token_resp.raise_for_status()
 

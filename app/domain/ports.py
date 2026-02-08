@@ -1,3 +1,5 @@
+"""Port interfaces for external service adapters."""
+
 from typing import List, Optional
 from .models import ContextItem
 

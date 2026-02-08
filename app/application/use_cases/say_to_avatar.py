@@ -1,3 +1,5 @@
+"""Use-case to send text to the avatar during a session."""
+
 # app/application/use_cases/say_to_avatar.py
 from dataclasses import dataclass
 from typing import Optional, Any, Dict

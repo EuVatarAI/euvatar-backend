@@ -1,3 +1,5 @@
+"""Speech-to-text endpoints for audio transcription."""
+
 from flask import Blueprint, request, jsonify, current_app
 from app.application.use_cases.speech_to_text import execute, STTInput
 

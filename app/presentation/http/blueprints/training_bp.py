@@ -1,3 +1,5 @@
+"""Training document upload/listing endpoints."""
+
 from flask import Blueprint, request, jsonify, current_app
 import requests
 import re

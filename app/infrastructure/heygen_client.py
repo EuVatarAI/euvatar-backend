@@ -1,3 +1,5 @@
+"""HTTP client for HeyGen REST endpoints."""
+
 # app/infrastructure/heygen_client.py
 from __future__ import annotations
 import requests

@@ -1,3 +1,5 @@
+"""Use-case to create streaming sessions with configured providers."""
+
 # app/application/use_cases/create_session.py
 from dataclasses import dataclass
 from typing import Optional

@@ -1,3 +1,5 @@
+"""Supabase Storage adapter for media assets."""
+
 import requests
 from ..core.settings import Settings
 from ..domain.ports import IStorage

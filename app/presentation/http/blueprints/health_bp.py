@@ -1,3 +1,5 @@
+"""Health and readiness endpoints."""
+
 from flask import Blueprint, jsonify, current_app, request, g
 
 bp = Blueprint("health", __name__)

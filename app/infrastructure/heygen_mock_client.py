@@ -1,3 +1,5 @@
+"""Mock client for HeyGen streaming calls."""
+
 from app.domain.ports import IHeygenClient
 
 class HeygenMockClient(IHeygenClient):

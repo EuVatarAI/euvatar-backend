@@ -1,3 +1,5 @@
+"""Shared file handling utilities."""
+
 import os
 
 def ensure_dir(p: str) -> None:

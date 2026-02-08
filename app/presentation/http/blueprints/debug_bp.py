@@ -1,3 +1,5 @@
+"""Debug and diagnostics endpoints."""
+
 import base64, json
 from flask import Blueprint, jsonify, current_app
 from app.infrastructure.supabase_storage import SupabaseStorage

@@ -1,3 +1,5 @@
+"""OpenAI speech-to-text adapter."""
+
 import requests
 from app.core.settings import Settings
 from app.domain.ports import ISTTClient

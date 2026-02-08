@@ -1,3 +1,5 @@
+"""Repository for context triggers and training documents."""
+
 from typing import Optional, List
 from app.core.settings import Settings
 from app.domain.models import ContextItem, TrainingDoc

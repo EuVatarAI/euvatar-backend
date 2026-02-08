@@ -1,3 +1,5 @@
+"""Authentication helpers and request guards."""
+
 from functools import wraps
 from typing import Tuple
 import requests
@@ -47,9 +49,49 @@ def _get_client_id_for_user(user_id: str) -> str | None:
         return None
     return rows[0].get("id")
 
+def _get_client_id_for_avatar(avatar_id: str) -> str | None:
+    settings = current_app.container.settings
+    headers = {
+        "Authorization": f"Bearer {settings.supabase_service_role}",
+        "apikey": settings.supabase_service_role,
+    }
+    # 1) get avatar owner (user_id)
+    try:
+        avatar_resp = requests.get(
+            f"{settings.supabase_url}/rest/v1/avatars",
+            headers=headers,
+            params={"select": "id,user_id", "id": f"eq.{avatar_id}", "limit": "1"},
+            timeout=10,
+        )
+    except requests.RequestException:
+        return None
+    if avatar_resp.status_code != 200:
+        return None
+    avatar_rows = avatar_resp.json() or []
+    if not avatar_rows:
+        return None
+    user_id = avatar_rows[0].get("user_id")
+    if not user_id:
+        return None
+    return _get_client_id_for_user(user_id)
+
 def _authenticate() -> Tuple[str, str]:
     token = _extract_token()
     if not token:
+        # Allow public access for specific endpoints when avatar_id is provided
+        public_avatar_id = request.headers.get("X-Public-Avatar-Id", "").strip()
+        allowed_public_paths = {
+            "/new",
+            "/say",
+            "/interrupt",
+            "/end",
+            "/context/resolve",
+            "/liveavatar/voices",
+        }
+        if public_avatar_id and request.path in allowed_public_paths:
+            client_id = _get_client_id_for_avatar(public_avatar_id)
+            if client_id:
+                return "public", client_id
         resp = jsonify({"ok": False, "error": "unauthorized"})
         resp.status_code = 401
         abort(resp)

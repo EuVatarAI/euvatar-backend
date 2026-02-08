@@ -1,3 +1,5 @@
+"""Flask app factory and blueprint registration."""
+
 from __future__ import annotations
 from flask import Flask
 from flask_cors import CORS
@@ -16,7 +18,17 @@ def create_app() -> Flask:
     app.container = Container()  # type: ignore
     s = app.container.settings
 
-    CORS(app, resources={r"/*": {"origins": s.cors_origins}})
+    CORS(
+        app,
+        resources={r"/*": {"origins": s.cors_origins}},
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-Client-Id",
+            "X-Public-Avatar-Id",
+        ],
+        methods=["GET", "POST", "OPTIONS"],
+    )
 
     app.static_folder = s.static_dir
     app.static_url_path = ""

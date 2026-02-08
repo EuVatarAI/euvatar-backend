@@ -1,3 +1,5 @@
+"""Use-case for computing usage and credit metrics."""
+
 from ...domain.models import LiveSession, BudgetLedger
 
 def build_metrics(session: LiveSession, ledger: BudgetLedger) -> dict:

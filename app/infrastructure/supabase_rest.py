@@ -1,3 +1,5 @@
+"""Supabase REST adapter for database operations."""
+
 import requests
 from ..core.settings import Settings
 

@@ -1,9 +1,12 @@
+"""Session endpoints for LiveAvatar/HeyGen streaming and lifecycle."""
+
 import json
 import base64
 import time
 import os
 import requests
 import io
+import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from math import floor
@@ -61,6 +64,15 @@ def _http_from_error_code(code: str | None) -> int:
         return 200  # soft busy: não quebra a sessão
     return 502
 # ===========================================
+
+def _is_uuid(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        uuid.UUID(str(value))
+        return True
+    except Exception:
+        return False
 
 def _client_id():
     # client_id vem do token validado (JWT)
@@ -292,7 +304,7 @@ def _fetch_avatar_credentials(s: Settings):
     return main, mapping
 
 
-def _fetch_avatar_credentials_rows(s: Settings) -> list:
+def _fetch_avatar_credentials_rows(s: Settings, avatar_ids: list | None = None) -> list:
     """
     Busca todas as credenciais de avatar e já decodifica api_key e avatar_external_id.
     """
@@ -300,9 +312,12 @@ def _fetch_avatar_credentials_rows(s: Settings) -> list:
     headers = _supabase_headers(s)
     rows = []
     try:
+        params = {"select": "api_key,avatar_id,avatar_external_id,voice_id,context_id"}
+        if avatar_ids:
+            params["avatar_id"] = f"in.({','.join(avatar_ids)})"
         r = requests.get(
             base,
-            params={"select": "api_key,avatar_id,avatar_external_id,voice_id,context_id"},
+            params=params,
             headers=headers,
             timeout=6,
         )
@@ -581,14 +596,21 @@ def _build_avatar_usage_from_supa(rows: list) -> list:
     return avatar_usage
 
 
-def _fetch_avatar_sessions_usage(s: Settings) -> list:
+def _fetch_avatar_sessions_usage(s: Settings, avatar_ids: list | None = None) -> list:
     try:
         url = s.supabase_url.rstrip("/") + "/rest/v1/avatar_sessions"
         headers = _supabase_headers(s)
         # limita últimas sessões para não estourar payload
+        params = {
+            "select": "avatar_id,duration_seconds,session_id,started_at,ended_at",
+            "order": "started_at.desc",
+            "limit": 1000,
+        }
+        if avatar_ids:
+            params["avatar_id"] = f"in.({','.join(avatar_ids)})"
         r = requests.get(
             url,
-            params={"select": "avatar_id,duration_seconds,session_id,started_at,ended_at", "order": "started_at.desc", "limit": 1000},
+            params=params,
             headers=headers,
             timeout=6,
         )
@@ -656,7 +678,11 @@ def _fetch_avatar_voice_model(settings: Settings, avatar_id: str) -> str | None:
     return None
 
 
-def _calc_credits_payload(remaining_quota: float):
+def _calc_credits_payload(
+    remaining_quota: float,
+    total_euvatar_credits: float | None = 960,
+    credits_used: float | None = None,
+):
     """
     Replica a lógica da edge function:
     - remaining_quota vem em segundos (HeyGen)
@@ -667,15 +693,22 @@ def _calc_credits_payload(remaining_quota: float):
     raw_euvatar = floor(heygenCredits * 20)
     raw_minutes = floor(heygenCredits * 5)
 
-    totalEuvatarCredits = 960
-    totalMinutes = 240
-    totalHours = 4
+    totalEuvatarCredits = float(total_euvatar_credits or 0)
+    # 1 minuto = 4 créditos Euvatar
+    totalMinutes = floor(totalEuvatarCredits / 4) if totalEuvatarCredits > 0 else 0
+    totalHours = round(totalMinutes / 60.0, 2) if totalMinutes > 0 else 0
 
     euvatarCredits = min(max(raw_euvatar, 0), totalEuvatarCredits)
     minutesRemaining = min(max(raw_minutes, 0), totalMinutes)
     hoursRemaining = minutesRemaining / 60.0
 
-    usedCredits = max(0, totalEuvatarCredits - euvatarCredits)
+    if credits_used is not None:
+        try:
+            usedCredits = max(0, float(credits_used))
+        except Exception:
+            usedCredits = max(0, totalEuvatarCredits - euvatarCredits)
+    else:
+        usedCredits = max(0, totalEuvatarCredits - euvatarCredits)
     usedMinutes = max(0, totalMinutes - minutesRemaining)
     percentage = 0 if totalEuvatarCredits == 0 else round((euvatarCredits / totalEuvatarCredits) * 100)
 
@@ -691,6 +724,48 @@ def _calc_credits_payload(remaining_quota: float):
         "usedMinutes": usedMinutes,
         "percentageRemaining": percentage,
     }
+
+
+def _fetch_client_plan(settings: Settings, user_id: str) -> dict:
+    """
+    Busca configuração de plano/créditos do cliente na tabela admin_clients.
+    Retorna: {"configured": bool, "total_credits": float, "credits_used": float}
+    """
+    if not user_id:
+        return {"configured": False, "total_credits": 0, "credits_used": 0}
+    try:
+        url = settings.supabase_url.rstrip("/") + "/rest/v1/admin_clients"
+        headers = _supabase_headers(settings)
+        r = requests.get(
+            url,
+            params={
+                "select": "credits_balance,credits_used_this_month,current_plan",
+                "user_id": f"eq.{user_id}",
+                "limit": 1,
+            },
+            headers=headers,
+            timeout=6,
+        )
+        if not r.ok:
+            _log("SUPA", "admin_client_plan_err", {"status": r.status_code, "body": r.text[:120]})
+            return {"configured": False, "total_credits": 0, "credits_used": 0}
+        data = (r.json() or [])
+        if not data:
+            return {"configured": False, "total_credits": 0, "credits_used": 0}
+        row = data[0]
+        credits_balance = row.get("credits_balance")
+        credits_used = row.get("credits_used_this_month") or 0
+        current_plan = row.get("current_plan")
+        configured = bool(current_plan or credits_balance is not None)
+        total_credits = float(credits_balance or 0)
+        try:
+            credits_used = float(credits_used or 0)
+        except Exception:
+            credits_used = 0
+        return {"configured": configured, "total_credits": total_credits, "credits_used": credits_used}
+    except Exception as e:
+        _log("SUPA", "admin_client_plan_exc", {"err": str(e)[:120]})
+        return {"configured": False, "total_credits": 0, "credits_used": 0}
 
 
 def _build_avatar_usage(sessions: list, mapping_rows: list) -> list:
@@ -749,26 +824,53 @@ def credits():
     Payload compatível com a edge function get-heygen-credits.
     """
     s: Settings = current_app.container.settings
+    client_id = _client_id()
+    user_id = _get_client_user_id(s, client_id)
+    avatar_ids = _get_avatar_ids_for_user(s, user_id)
+    cred_rows = _fetch_avatar_credentials_rows(s, avatar_ids)
+    if not cred_rows:
+        return jsonify({"error": "missing_api_key_for_client", "avatarUsage": []}), 400
+
+    plan = _fetch_client_plan(s, user_id)
+    credits_configured = bool(plan.get("configured"))
+
     if s.avatar_provider == "liveavatar":
-        avatar_usage = _fetch_avatar_sessions_usage(s)
+        avatar_usage = _fetch_avatar_sessions_usage(s, avatar_ids)
+        if not credits_configured:
+            return jsonify({
+                "error": "Sem créditos configurados",
+                "creditsConfigured": False,
+                "needsCredentialUpdate": False,
+                "avatarUsage": avatar_usage,
+                "euvatarCredits": 0,
+                "heygenCredits": 0,
+                "totalEuvatarCredits": 0,
+                "minutesRemaining": 0,
+                "totalMinutes": 0,
+                "hoursRemaining": 0,
+                "totalHours": 0,
+                "usedEuvatarCredits": 0,
+                "usedMinutes": 0,
+                "percentageRemaining": 0,
+            }), 200
         return jsonify({
             "error": "Créditos LiveAvatar estimados via uso (sem API oficial)",
+            "creditsConfigured": True,
             "needsCredentialUpdate": False,
             "avatarUsage": avatar_usage,
             "euvatarCredits": 0,
             "heygenCredits": 0,
-            "totalEuvatarCredits": 960,
+            "totalEuvatarCredits": plan.get("total_credits", 0),
             "minutesRemaining": 0,
-            "totalMinutes": 240,
+            "totalMinutes": floor((plan.get("total_credits") or 0) / 4),
             "hoursRemaining": 0,
-            "totalHours": 4,
-            "usedEuvatarCredits": 0,
+            "totalHours": round(floor((plan.get("total_credits") or 0) / 4) / 60.0, 2),
+            "usedEuvatarCredits": plan.get("credits_used", 0),
             "usedMinutes": 0,
             "percentageRemaining": 0,
         }), 200
 
-    # Busca todas as credenciais por avatar (cada avatar pode ter sua própria api_key)
-    cred_rows = _fetch_avatar_credentials_rows(s)
+    # Busca credenciais somente dos avatares do cliente (cada avatar pode ter sua própria api_key)
     keys = sorted({row.get("api_key") for row in cred_rows if row.get("api_key")})
 
     _log("CRED", "using_keys_from_supa", {"count": len(keys)})
@@ -820,20 +922,40 @@ def credits():
         remaining_quota_total += float(remaining_quota or 0)
         quota_ok = True
 
-    payload = _calc_credits_payload(remaining_quota_total) if quota_ok else {
-        "euvatarCredits": 0,
-        "heygenCredits": 0,
-        "totalEuvatarCredits": 960,
-        "minutesRemaining": 0,
-        "totalMinutes": 240,
-        "hoursRemaining": 0,
-        "totalHours": 4,
-        "usedEuvatarCredits": 0,
-        "usedMinutes": 0,
-        "percentageRemaining": 0,
-    }
+    if not credits_configured:
+        payload = {
+            "error": "Sem créditos configurados",
+            "creditsConfigured": False,
+            "euvatarCredits": 0,
+            "heygenCredits": 0,
+            "totalEuvatarCredits": 0,
+            "minutesRemaining": 0,
+            "totalMinutes": 0,
+            "hoursRemaining": 0,
+            "totalHours": 0,
+            "usedEuvatarCredits": 0,
+            "usedMinutes": 0,
+            "percentageRemaining": 0,
+        }
+    else:
+        payload = _calc_credits_payload(
+            remaining_quota_total,
+            total_euvatar_credits=plan.get("total_credits", 0),
+            credits_used=plan.get("credits_used", 0),
+        ) if quota_ok else {
+            "euvatarCredits": 0,
+            "heygenCredits": 0,
+            "totalEuvatarCredits": plan.get("total_credits", 0),
+            "minutesRemaining": 0,
+            "totalMinutes": floor((plan.get("total_credits") or 0) / 4),
+            "hoursRemaining": 0,
+            "totalHours": round(floor((plan.get("total_credits") or 0) / 4) / 60.0, 2),
+            "usedEuvatarCredits": plan.get("credits_used", 0),
+            "usedMinutes": 0,
+            "percentageRemaining": 0,
+        }
 
-    avatar_usage = _fetch_avatar_sessions_usage(s)
+    avatar_usage = _fetch_avatar_sessions_usage(s, avatar_ids)
     if not avatar_usage:
         try:
             sessions = []
@@ -854,11 +976,11 @@ def credits():
             _log("HEYGEN", "sessions_exc", {"err": str(e)[:200]})
 
     payload["avatarUsage"] = avatar_usage
-    if not quota_ok and quota_any_401:
+    if not quota_ok and quota_any_401 and credits_configured:
         payload["error"] = "A API key do Euvatar está inválida ou expirada"
         payload["needsCredentialUpdate"] = True
         return jsonify(payload), 200
-    if not quota_ok:
+    if not quota_ok and credits_configured:
         payload["error"] = "Erro ao buscar créditos do Euvatar"
         return jsonify(payload), 502
     return jsonify(payload), 200
@@ -1043,6 +1165,9 @@ def new_session():
             if c.settings.avatar_provider == "liveavatar":
                 if not voice_id:
                     voice_id = _fetch_avatar_voice_model(c.settings, avatar_id) or (creds or {}).get("voice_id") or c.settings.liveavatar_voice_id
+                if voice_id and not _is_uuid(voice_id):
+                    _log("LIVEAVATAR", "voice_id_invalid", {"value": voice_id})
+                    voice_id = None
                 if not context_id:
                     context_id = (creds or {}).get("context_id") or c.settings.liveavatar_context_id
                 if not context_id and backstory_param:
@@ -1108,6 +1233,9 @@ def new_session():
         if c.settings.avatar_provider == "liveavatar":
             if not voice_id:
                 voice_id = _fetch_avatar_voice_model(c.settings, avatar_id_in) or (creds or {}).get("voice_id") or c.settings.liveavatar_voice_id
+            if voice_id and not _is_uuid(voice_id):
+                _log("LIVEAVATAR", "voice_id_invalid", {"value": voice_id})
+                voice_id = None
             if not context_id:
                 context_id = (creds or {}).get("context_id") or c.settings.liveavatar_context_id
             if not context_id and backstory_param:
@@ -1338,7 +1466,7 @@ def keepalive():
 def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Public-Avatar-Id, X-Client-Id"
     return resp
 
 
@@ -1470,3 +1598,41 @@ def metrics():
     session = _get_session(c, client_id)
     budget = _get_budget(c, client_id)
     return jsonify(build_metrics(session, budget))
+def _get_client_user_id(settings: Settings, client_id: str | None) -> str | None:
+    if not client_id:
+        return None
+    try:
+        url = settings.supabase_url.rstrip("/") + "/rest/v1/admin_clients"
+        headers = _supabase_headers(settings)
+        r = requests.get(
+            url,
+            params={"select": "id,user_id", "id": f"eq.{client_id}", "limit": 1},
+            headers=headers,
+            timeout=6,
+        )
+        if r.ok:
+            rows = r.json() or []
+            if rows:
+                return rows[0].get("user_id")
+    except Exception as e:
+        _log("SUPA", "client_user_fetch_err", {"err": str(e)[:120]})
+    return None
+
+
+def _get_avatar_ids_for_user(settings: Settings, user_id: str | None) -> list:
+    if not user_id:
+        return []
+    try:
+        url = settings.supabase_url.rstrip("/") + "/rest/v1/avatars"
+        headers = _supabase_headers(settings)
+        r = requests.get(
+            url,
+            params={"select": "id", "user_id": f"eq.{user_id}", "limit": 1000},
+            headers=headers,
+            timeout=6,
+        )
+        if r.ok:
+            return [row.get("id") for row in (r.json() or []) if row.get("id")]
+    except Exception as e:
+        _log("SUPA", "avatar_ids_fetch_err", {"err": str(e)[:120]})
+    return []

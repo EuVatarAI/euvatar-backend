@@ -1,3 +1,5 @@
+"""Use-case to interrupt or stop a session."""
+
 from dataclasses import dataclass
 from app.domain.ports import IHeygenClient
 

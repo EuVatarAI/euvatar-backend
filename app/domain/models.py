@@ -1,3 +1,5 @@
+"""Domain models for sessions, budgets, and usage."""
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Dict, Any

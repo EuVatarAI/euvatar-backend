@@ -1,3 +1,5 @@
+"""Dependency container wiring repositories and service clients."""
+
 from dataclasses import dataclass, field
 from app.core.settings import Settings
 from app.domain.models import LiveSession, BudgetLedger
