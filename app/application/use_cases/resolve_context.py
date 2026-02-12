@@ -11,10 +11,14 @@ from app.core.settings import Settings
 class ResolveInput:
     avatar_identifier: str
     text: str
+    client_id: str | None = None
 
 def execute(settings: Settings, repo: IContextRepository, args: ResolveInput) -> dict:
     t0 = time.time()
-    avatar_uuid = repo.resolve_avatar_uuid(args.avatar_identifier)
+    if args.client_id:
+        avatar_uuid = repo.resolve_avatar_uuid_for_client(args.avatar_identifier, args.client_id)
+    else:
+        avatar_uuid = repo.resolve_avatar_uuid(args.avatar_identifier)
     if not avatar_uuid:
         return {"ok": True, "match": "none", "media": None, "method": "none", "latency_ms": int((time.time()-t0)*1000)}
     contexts = repo.list_contexts_by_avatar(avatar_uuid)

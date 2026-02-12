@@ -46,6 +46,38 @@ class ContextRepository(IContextRepository):
                 return gen
             return None
 
+    def resolve_avatar_uuid_for_client(self, avatar_identifier: str, client_id: str) -> Optional[str]:
+        """Resolve avatar only when it belongs to the provided client_id."""
+        avatar_uuid = self.resolve_avatar_uuid(avatar_identifier)
+        if not avatar_uuid or not client_id:
+            return None
+
+        # Map client_id -> owner user_id
+        rows = get_json(
+            self._s,
+            "admin_clients",
+            "user_id",
+            {"id": f"eq.{client_id}"},
+            limit=1,
+        )
+        if not rows:
+            return None
+        owner_user_id = (rows[0].get("user_id") or "").strip()
+        if not owner_user_id:
+            return None
+
+        # Ensure avatar belongs to that user
+        avatar_rows = get_json(
+            self._s,
+            "avatars",
+            "id",
+            {"id": f"eq.{avatar_uuid}", "user_id": f"eq.{owner_user_id}"},
+            limit=1,
+        )
+        if not avatar_rows:
+            return None
+        return avatar_uuid
+
     def list_contexts_by_avatar(self, avatar_uuid: str) -> List[ContextItem]:
         rows = get_json(self._s, "contexts", "name,media_url,media_type,keywords_text,description,enabled", {"avatar_id": f"eq.{avatar_uuid}"})
         items: List[ContextItem] = []

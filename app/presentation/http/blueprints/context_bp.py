@@ -1,6 +1,6 @@
 """Context trigger resolution endpoints for media overlays."""
 
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, g
 from app.application.use_cases.resolve_context import execute as resolve_uc, ResolveInput
 
 bp = Blueprint("context", __name__)
@@ -14,7 +14,15 @@ def context_resolve():
         text = (j.get("text") or "").strip()
         if not avatar_id or not text:
             return jsonify({"ok": False, "error":"missing_params"}), 400
-        out = resolve_uc(c.settings, c.ctx_repo, ResolveInput(avatar_identifier=avatar_id, text=text))
+        out = resolve_uc(
+            c.settings,
+            c.ctx_repo,
+            ResolveInput(
+                avatar_identifier=avatar_id,
+                text=text,
+                client_id=getattr(g, "client_id", None),
+            ),
+        )
         return jsonify(out)
     except Exception as e:
         return jsonify({"ok": False, "error": f"resolve_exception: {e}"}), 500
@@ -29,7 +37,11 @@ def context_list():
         if not avatar_id:
             return jsonify({"ok": False, "error": "missing_avatar_id"}), 400
 
-        avatar_uuid = c.ctx_repo.resolve_avatar_uuid(avatar_id)
+        client_id = getattr(g, "client_id", None)
+        if client_id:
+            avatar_uuid = c.ctx_repo.resolve_avatar_uuid_for_client(avatar_id, client_id)
+        else:
+            avatar_uuid = c.ctx_repo.resolve_avatar_uuid(avatar_id)
         if not avatar_uuid:
             return jsonify({"ok": False, "error": "avatar_not_found"}), 404
         items = c.ctx_repo.list_contexts_by_avatar(avatar_uuid)

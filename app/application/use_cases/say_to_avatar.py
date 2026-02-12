@@ -35,6 +35,7 @@ class SayOutput:
     ok: bool
     duration_ms: int | None
     task_id: str | None
+    response_text: str | None
     media: MediaMatch | None
     context_method: str
     # sinalização de “busy suave”: front deve aguardar e tentar de novo
@@ -79,6 +80,29 @@ def _normalize_heygen_error(err_text: str) -> tuple[str, int]:
     return ("unknown", 500)
 
 
+def _extract_response_text(result: Dict[str, Any], data: Dict[str, Any]) -> str:
+    """
+    Try to extract the final assistant text from Heygen task_chat payload.
+    Falls back to empty string when no text-like field is present.
+    """
+    candidates = [
+        data.get("text"),
+        data.get("response"),
+        data.get("answer"),
+        data.get("message"),
+        (data.get("output") or {}).get("text") if isinstance(data.get("output"), dict) else None,
+        (data.get("content") or {}).get("text") if isinstance(data.get("content"), dict) else None,
+        result.get("text"),
+        result.get("response"),
+        result.get("answer"),
+        result.get("message"),
+    ]
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 # -------- gate anti-concorrência por sessão (mem local) --------
 _BUSY: dict[str, float] = {}
 _LOCK = threading.Lock()
@@ -112,7 +136,7 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
     if _is_busy(session_id):
         _log("SAY", "busy gate", {"session": session_id})
         return SayOutput(
-            ok=False, duration_ms=None, task_id=None, media=None,
+            ok=False, duration_ms=None, task_id=None, response_text=None, media=None,
             context_method="none", soft_busy=True, error="task in progress",
             error_code="task_in_progress"
         )
@@ -125,6 +149,7 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
                 ok=False,
                 duration_ms=None,
                 task_id=None,
+                response_text=None,
                 media=None,
                 context_method="none",
                 error="liveavatar_task_chat_not_supported",
@@ -155,7 +180,7 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
 
                 if code == "session_inactive":
                     return SayOutput(
-                        ok=False, duration_ms=None, task_id=None, media=None,
+                        ok=False, duration_ms=None, task_id=None, response_text=None, media=None,
                         context_method="none", error=last_err_text, error_code=code
                     )
 
@@ -167,12 +192,12 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
             # trata 400 recorrente como busy suave — deixa o front esperar e tentar dps
             if code in ("task_in_progress", "upstream_bad_request"):
                 return SayOutput(
-                    ok=False, duration_ms=None, task_id=None, media=None,
+                    ok=False, duration_ms=None, task_id=None, response_text=None, media=None,
                     context_method="none", soft_busy=True,
                     error=last_err_text, error_code=code
                 )
             return SayOutput(
-                ok=False, duration_ms=None, task_id=None, media=None,
+                ok=False, duration_ms=None, task_id=None, response_text=None, media=None,
                 context_method="none", error=last_err_text, error_code=code
             )
 
@@ -181,31 +206,35 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
         task_id = data.get("task_id")
         _log("SAY", "task_chat ok", {"duration_ms": duration_ms, "task_id": task_id})
 
+        # Trigger resolution MUST use only the assistant final response text.
+        response_text = _extract_response_text(result if isinstance(result, dict) else {}, data)
+        trigger_text = response_text.strip()
+
         # ========= contexto/mídia =========
         media: Optional[MediaMatch] = None
         method = "none"
 
-        if args.avatar_identifier:
+        if trigger_text and args.avatar_identifier:
             avatar_uuid = ctx_repo.resolve_avatar_uuid(args.avatar_identifier)
             if avatar_uuid:
                 contexts = getattr(args.session, "training_contexts", None) or ctx_repo.list_contexts_by_avatar(avatar_uuid)
                 names = [c.name for c in contexts]
                 if names:
-                    fm = fast_match_context(args.user_text, contexts)
+                    fm = fast_match_context(trigger_text, contexts)
                     if fm:
                         media = resolve_media_for_match(contexts, fm); method = "fast"
                     else:
-                        match = resolve_with_gpt(settings, args.user_text, names)
+                        match = resolve_with_gpt(settings, trigger_text, names)
                         if match != "none":
                             media = resolve_media_for_match(contexts, match); method = "gpt"
 
-        if not media:
-            m = detect_from_text(args.user_text)
+        if trigger_text and not media:
+            m = detect_from_text(trigger_text)
             if m:
                 media = m; method = "keywords"
 
         return SayOutput(
-            ok=True, duration_ms=duration_ms, task_id=task_id, media=media, context_method=method
+            ok=True, duration_ms=duration_ms, task_id=task_id, response_text=trigger_text, media=media, context_method=method
         )
 
     except Exception as e:
@@ -213,7 +242,7 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
         code, _ = _normalize_heygen_error(err_text)
         _log("ERR", "execute fatal", {"mapped": code, "err": err_text[:500]})
         return SayOutput(
-            ok=False, duration_ms=None, task_id=None, media=None,
+            ok=False, duration_ms=None, task_id=None, response_text=None, media=None,
             context_method="none", error=err_text, error_code=code
         )
     finally:

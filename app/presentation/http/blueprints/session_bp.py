@@ -1395,6 +1395,7 @@ def say():
 
         resp = {
             "ok": True,
+            "text": out.response_text or "",
             "duration_ms": out.duration_ms,
             "task_id": out.task_id,
             "media": (out.media.__dict__ if out.media else None),
