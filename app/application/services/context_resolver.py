@@ -50,8 +50,13 @@ def resolve_with_gpt(settings: Settings, user_text: str, context_names: List[str
     r = requests.post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {settings.openai_api_key}", "Content-Type": "application/json"},
-        json={"model": "gpt-4o-mini", "messages": [{"role":"system","content":system},{"role":"user","content":user}], "temperature": 0},
-        timeout=25
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": 0,
+            "max_tokens": 24,
+        },
+        timeout=12
     )
     if not r.ok: return "none"
     try:

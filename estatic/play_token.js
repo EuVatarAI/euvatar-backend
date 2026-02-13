@@ -363,6 +363,7 @@ async function doSay(text){
       }
 
       const j=await r.json();
+      console.log("MEDIA RECEBIDA:", j?.media || null);
       lastSayAt = Date.now();
       showStatus("Respondendo…"); hideStatus(1400);
 

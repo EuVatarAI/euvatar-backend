@@ -4,6 +4,7 @@
 from dataclasses import dataclass
 from typing import Optional, Any, Dict
 import time
+from datetime import datetime
 import threading
 
 from app.domain.ports import IHeygenClient, IContextRepository
@@ -160,6 +161,7 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
         _log("SAY", "task_chat init", {"session": session_id})
 
         attempts = 0
+        t_task_start = time.time()
         result: Dict[str, Any] | None = None
         last_err_text: str | None = None
 
@@ -204,7 +206,15 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
         data = (result.get("data") or {}) if isinstance(result, dict) else {}
         duration_ms = int(data.get("duration_ms", 0)) if isinstance(data.get("duration_ms", 0), (int, float)) else 0
         task_id = data.get("task_id")
-        _log("SAY", "task_chat ok", {"duration_ms": duration_ms, "task_id": task_id})
+        _log(
+            "SAY",
+            "task_chat ok",
+            {
+                "duration_ms": duration_ms,
+                "task_id": task_id,
+                "task_chat_latency_ms": int((time.time() - t_task_start) * 1000),
+            },
+        )
 
         # Trigger resolution MUST use only the assistant final response text.
         response_text = _extract_response_text(result if isinstance(result, dict) else {}, data)
@@ -232,6 +242,19 @@ def execute(settings: Settings, heygen: IHeygenClient, ctx_repo: IContextReposit
             m = detect_from_text(trigger_text)
             if m:
                 media = m; method = "keywords"
+
+        _log(
+            "MEDIA",
+            "MEDIA RESOLVIDA",
+            {
+                "media": (media.__dict__ if media else None),
+                "context_method": method,
+                "has_trigger_text": bool(trigger_text),
+            },
+        )
+        # Diagnóstico solicitado: manter print simples para facilitar grep/log tail.
+        resolved_ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+        print(f"MEDIA RESOLVIDA [{resolved_ts}] :", (media.__dict__ if media else None), flush=True)
 
         return SayOutput(
             ok=True, duration_ms=duration_ms, task_id=task_id, response_text=trigger_text, media=media, context_method=method

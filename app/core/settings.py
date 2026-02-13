@@ -20,6 +20,7 @@ class Settings:
     heygen_default_avatar: str
 
     openai_api_key: str | None
+    stt_models: List[str]
 
     supabase_url: str
     supabase_service_role: str
@@ -100,6 +101,7 @@ class Settings:
             ),
 
             openai_api_key=os.getenv("OPENAI_API_KEY"),
+            stt_models=_split_env_list(os.getenv("STT_MODELS", "gpt-4o-mini-transcribe,whisper-1")),
 
             supabase_url=supabase_url,
             supabase_service_role=supabase_key,

@@ -3,6 +3,7 @@
 import json
 import base64
 import time
+from datetime import datetime
 import os
 import requests
 import io
@@ -956,7 +957,7 @@ def credits():
         }
 
     avatar_usage = _fetch_avatar_sessions_usage(s, avatar_ids)
-    if not avatar_usage:
+    if not avatar_usage:    
         try:
             sessions = []
             for key in keys:
@@ -1180,6 +1181,8 @@ def new_session():
                     if context_id:
                         _update_avatar_context_id(c.settings, avatar_id, context_id)
 
+            start_ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+            _log("HEYGEN", "start_req", {"ts": start_ts, "context": "resume"})
             out = create_session_uc(
                 heygen_client, budget,
                 CreateSessionInput(
@@ -1193,6 +1196,8 @@ def new_session():
                     avatar_id=avatar_id
                 )
             )
+            end_ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+            _log("HEYGEN", "start_resp", {"ts": end_ts, "context": "resume"})
 
             if not out.ok:
                 _log("ERR", "resume_uc", {"error": out.error, "ms": int((time.time()-t0)*1000)})
@@ -1211,6 +1216,13 @@ def new_session():
                 pass
 
             # carrega cache de treinamento (contextos + docs) uma vez
+            # Prewarm caches for /stt (client + public paths)
+            try:
+                c.ctx_repo.resolve_avatar_uuid(avatar_id)
+                if client_id:
+                    c.ctx_repo.resolve_avatar_uuid_for_client(avatar_id, client_id)
+            except Exception:
+                pass
             ctxs, docs, summary = _load_training_cache(c, avatar_id)
             out.session.training_contexts = ctxs
             out.session.training_docs = docs
@@ -1248,6 +1260,8 @@ def new_session():
                 if context_id:
                     _update_avatar_context_id(c.settings, avatar_id_in, context_id)
 
+        start_ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+        _log("HEYGEN", "start_req", {"ts": start_ts, "context": "new"})
         out = create_session_uc(
             heygen_client, budget,
             CreateSessionInput(
@@ -1261,6 +1275,8 @@ def new_session():
                 avatar_id=avatar_id   # <-- AGORA SIM!!
             )
         )
+        end_ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+        _log("HEYGEN", "start_resp", {"ts": end_ts, "context": "new"})
         if not out.ok:
             _log("ERR", "create_session_uc", {"error": out.error, "ms": int((time.time()-t0)*1000)})
             return jsonify({"ok": False, "error": out.error}), 502
@@ -1277,6 +1293,13 @@ def new_session():
             pass
 
         # carrega cache de treinamento (contextos + docs) uma vez
+        # Prewarm caches for /stt (client + public paths)
+        try:
+            c.ctx_repo.resolve_avatar_uuid(avatar_id_in)
+            if client_id:
+                c.ctx_repo.resolve_avatar_uuid_for_client(avatar_id_in, client_id)
+        except Exception:
+            pass
         ctxs, docs, summary = _load_training_cache(c, avatar_id_in)
         out.session.training_contexts = ctxs
         out.session.training_docs = docs
