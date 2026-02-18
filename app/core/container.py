@@ -9,6 +9,7 @@ from app.infrastructure.supabase_storage import SupabaseStorage
 from app.infrastructure.context_repository import ContextRepository
 from app.infrastructure.heygen_livekit_client import HeygenLivekitClient
 from app.infrastructure.liveavatar_client import LiveAvatarClient
+from app.infrastructure.gemini_image_client import GeminiImageClient
 
 @dataclass
 class Container:
@@ -22,6 +23,7 @@ class Container:
 
     heygen: HeygenClient = None
     stt: OpenAIWhisperClient | None = None
+    image_gen: GeminiImageClient | None = None
     storage: SupabaseStorage = None
     ctx_repo: ContextRepository = None
 
@@ -31,6 +33,9 @@ class Container:
         # stt é opcional; só cria quando chave existir
         if self.settings.openai_api_key:
             self.stt = OpenAIWhisperClient(self.settings)
+        # image generation is optional; only when Gemini key exists
+        if self.settings.gemini_api_key:
+            self.image_gen = GeminiImageClient(self.settings)
         self.storage = SupabaseStorage(self.settings)
         self.ctx_repo = ContextRepository(self.settings)
 

@@ -5,6 +5,21 @@ from typing import Tuple
 import requests
 from flask import request, jsonify, current_app, abort, g
 
+def _is_public_path_allowed(path: str) -> bool:
+    static_allowed = {
+        "/credentials",
+        "/uploads/signed-url",
+        "/uploads/confirm",
+        "/generations",
+    }
+    if path in static_allowed:
+        return True
+    if path.startswith("/public/experience/"):
+        return True
+    if path.startswith("/generations/"):
+        return True
+    return False
+
 def _extract_token() -> str | None:
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
@@ -78,9 +93,11 @@ def _get_client_id_for_avatar(avatar_id: str) -> str | None:
 def _authenticate() -> Tuple[str, str]:
     token = _extract_token()
     if not token:
-        # Allow public access for specific endpoints when avatar_id is provided
+        if _is_public_path_allowed(request.path):
+            return "public", "public"
+        # Allow public avatar-scoped access for specific endpoints when avatar_id is provided
         public_avatar_id = request.headers.get("X-Public-Avatar-Id", "").strip()
-        allowed_public_paths = {
+        avatar_public_paths = {
             "/new",
             "/say",
             "/interrupt",
@@ -88,9 +105,9 @@ def _authenticate() -> Tuple[str, str]:
             "/context/resolve",
             "/liveavatar/voices",
         }
-        if public_avatar_id and request.path in allowed_public_paths:
+        if public_avatar_id:
             client_id = _get_client_id_for_avatar(public_avatar_id)
-            if client_id:
+            if client_id and request.path in avatar_public_paths:
                 return "public", client_id
         resp = jsonify({"ok": False, "error": "unauthorized"})
         resp.status_code = 401

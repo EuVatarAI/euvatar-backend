@@ -21,6 +21,8 @@ class Settings:
 
     openai_api_key: str | None
     stt_models: List[str]
+    gemini_api_key: str | None
+    gemini_image_model: str
 
     supabase_url: str
     supabase_service_role: str
@@ -102,6 +104,8 @@ class Settings:
 
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             stt_models=_split_env_list(os.getenv("STT_MODELS", "gpt-4o-mini-transcribe,whisper-1")),
+            gemini_api_key=os.getenv("GEMINI_API_KEY"),
+            gemini_image_model=os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image"),
 
             supabase_url=supabase_url,
             supabase_service_role=supabase_key,
