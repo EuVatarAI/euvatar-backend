@@ -5,7 +5,8 @@ from dotenv import load_dotenv
 from app.presentation.http.server import create_app
 
 if __name__ == "__main__":
-    load_dotenv()
+    # Prefer project .env values over any stale exported shell vars.
+    load_dotenv(override=True)
     app = create_app()
     s = app.container.settings
     # use_reloader desliga o watchdog; threaded=False evita multiprocessing em /dev/shm

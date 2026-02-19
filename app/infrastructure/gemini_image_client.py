@@ -15,34 +15,12 @@ class GeminiImageClient(IImageGenerationClient):
         if not self._s.gemini_api_key:
             raise RuntimeError("missing_GEMINI_API_KEY")
 
-    def generate_from_reference(self, prompt: str, image_bytes: bytes, mime_type: str) -> dict:
-        if not image_bytes:
-            raise ValueError("missing_reference_image")
-
+    def _request_generation(self, payload: dict) -> dict:
         model = self._s.gemini_image_model or "gemini-2.5-flash-image"
-        b64 = base64.b64encode(image_bytes).decode("ascii")
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{model}:generateContent?key={self._s.gemini_api_key}"
         )
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": mime_type or "image/jpeg",
-                                "data": b64,
-                            }
-                        },
-                    ]
-                }
-            ],
-            "generation_config": {
-                "response_modalities": ["IMAGE"],
-            },
-        }
         r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=90)
         r.raise_for_status()
         data = r.json() or {}
@@ -71,3 +49,44 @@ class GeminiImageClient(IImageGenerationClient):
             "usage_metadata": data.get("usageMetadata") or data.get("usage_metadata"),
         }
 
+    def generate_from_reference(self, prompt: str, image_bytes: bytes, mime_type: str) -> dict:
+        if not image_bytes:
+            raise ValueError("missing_reference_image")
+
+        b64 = base64.b64encode(image_bytes).decode("ascii")
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type or "image/jpeg",
+                                "data": b64,
+                            }
+                        },
+                    ]
+                }
+            ],
+            "generation_config": {
+                "response_modalities": ["IMAGE"],
+            },
+        }
+        return self._request_generation(payload)
+
+    def generate_from_prompt(self, prompt: str) -> dict:
+        if not (prompt or "").strip():
+            raise ValueError("missing_prompt")
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                    ]
+                }
+            ],
+            "generation_config": {
+                "response_modalities": ["IMAGE"],
+            },
+        }
+        return self._request_generation(payload)

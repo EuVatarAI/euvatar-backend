@@ -26,7 +26,7 @@ def _load_active_experience_by_slug(slug: str) -> dict | None:
         c.settings,
         "experiences",
         "id,type,status,config_json",
-        {"slug": f"eq.{slug}", "status": "eq.active"},
+        {"slug": f"eq.{slug}", "status": "in.(active,published)"},
         limit=1,
     )
     return rows[0] if rows else None
@@ -38,7 +38,7 @@ def _load_active_experience_by_id(experience_id: str) -> dict | None:
         c.settings,
         "experiences",
         "id,status",
-        {"id": f"eq.{experience_id}", "status": "eq.active"},
+        {"id": f"eq.{experience_id}", "status": "in.(active,published)"},
         limit=1,
     )
     return rows[0] if rows else None
@@ -316,7 +316,7 @@ def create_generation():
             return jsonify({"ok": False, "error": "missing_credential_id"}), 400
 
         exp = _load_experience_by_id(experience_id)
-        if not exp or exp.get("status") != "active":
+        if not exp or str(exp.get("status") or "").strip().lower() not in {"active", "published"}:
             return jsonify({"ok": False, "error": "experience_not_found_or_inactive"}), 404
         if not _load_credential_for_experience(credential_id, experience_id):
             return jsonify({"ok": False, "error": "credential_not_found_for_experience"}), 404

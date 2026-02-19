@@ -16,16 +16,21 @@ class GenerateEditorialImageInput:
     hair_color: str
     reference_image_bytes: bytes
     reference_mime_type: str
+    prompt_override: str | None = None
 
 
 def execute(image_client: IImageGenerationClient, args: GenerateEditorialImageInput) -> tuple[dict, int]:
     if not args.reference_image_bytes:
         return {"ok": False, "error": "missing_reference_image"}, 400
 
-    try:
-        prompt = build_editorial_prompt(args.gender, args.hair_color)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}, 400
+    prompt_override = (args.prompt_override or "").strip()
+    if prompt_override:
+        prompt = prompt_override
+    else:
+        try:
+            prompt = build_editorial_prompt(args.gender, args.hair_color)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}, 400
 
     try:
         t0 = time.time()
@@ -49,4 +54,3 @@ def execute(image_client: IImageGenerationClient, args: GenerateEditorialImageIn
         )
     except Exception as exc:
         return {"ok": False, "error": f"image_generation_failed:{exc}"}, 502
-
