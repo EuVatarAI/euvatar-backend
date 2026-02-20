@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -219,6 +220,84 @@ def _resolve_experience_gemini_key(settings: Settings, experience_id: str) -> st
 
 
 _VAR_TOKEN_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
+_WORD_RE = re.compile(r"\b[\wÀ-ÿ]+\b", re.UNICODE)
+
+_PROMPT_EXACT_TRANSLATIONS = {
+    "sim": "yes",
+    "nao": "no",
+    "não": "no",
+    "masculino": "male",
+    "feminino": "female",
+    "homem": "man",
+    "mulher": "woman",
+    "loiro": "blond",
+    "castanho": "brown",
+    "preto": "black",
+    "ruivo": "red",
+    "grisalho": "gray",
+    "solteiro": "single",
+    "casado": "married",
+    "divorciado": "divorced",
+    "viuvo": "widowed",
+    "viúvo": "widowed",
+}
+
+_PROMPT_WORD_TRANSLATIONS = {
+    "anos": "years",
+    "ano": "year",
+    "empreendimento": "business",
+    "empreendimentos": "businesses",
+    "vendas": "sales",
+    "venda": "sale",
+    "corretor": "broker",
+    "consultor": "consultant",
+    "cliente": "client",
+    "clientes": "clients",
+    "premium": "premium",
+    "iniciante": "beginner",
+    "avancado": "advanced",
+    "avançado": "advanced",
+    "experiente": "experienced",
+    "alto": "high",
+    "media": "medium",
+    "média": "medium",
+    "baixo": "low",
+}
+
+
+def _strip_accents(text: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFD", text or "") if unicodedata.category(ch) != "Mn")
+
+
+def _translate_prompt_value_to_english(value) -> str:
+    """
+    Converts dynamic prompt variable values to English before interpolation.
+    Keeps unknown words as-is to avoid data loss.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_translate_prompt_value_to_english(v) for v in value if v is not None)
+
+    raw = str(value).strip()
+    if not raw:
+        return ""
+
+    normalized = _strip_accents(raw).lower()
+    if normalized in _PROMPT_EXACT_TRANSLATIONS:
+        return _PROMPT_EXACT_TRANSLATIONS[normalized]
+
+    def _replace_word(match: re.Match[str]) -> str:
+        word = match.group(0)
+        key = _strip_accents(word).lower()
+        translated = _PROMPT_WORD_TRANSLATIONS.get(key)
+        return translated if translated else word
+
+    return _WORD_RE.sub(_replace_word, raw)
 
 
 def _render_prompt_template(template: str, data: dict | None) -> str:
@@ -232,7 +311,7 @@ def _render_prompt_template(template: str, data: dict | None) -> str:
         val = payload.get(key)
         if val is None:
             return ""
-        return str(val)
+        return _translate_prompt_value_to_english(val)
 
     rendered = _VAR_TOKEN_RE.sub(_replace, raw)
     # normalize whitespace while keeping line breaks readable
