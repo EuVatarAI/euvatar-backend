@@ -221,6 +221,11 @@ def _resolve_experience_gemini_key(settings: Settings, experience_id: str) -> st
 
 _VAR_TOKEN_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 _WORD_RE = re.compile(r"\b[\wÀ-ÿ]+\b", re.UNICODE)
+_LEGACY_VAR_PATTERNS = [
+    re.compile(r"\[\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\]\]"),   # [[key]]
+    re.compile(r"\{\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\]\}"),   # {[key]}
+    re.compile(r"\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\]"),       # [key]
+]
 
 _PROMPT_EXACT_TRANSLATIONS = {
     "sim": "yes",
@@ -269,6 +274,28 @@ def _strip_accents(text: str) -> str:
     return "".join(ch for ch in unicodedata.normalize("NFD", text or "") if unicodedata.category(ch) != "Mn")
 
 
+def _normalize_variable_key(raw: str) -> str:
+    key = (raw or "").strip()
+    if not key:
+        return ""
+    key = re.sub(r"^\{\{\s*|\s*\}\}$", "", key)
+    key = re.sub(r"^\[\[\s*|\s*\]\]$", "", key)
+    key = re.sub(r"^\{\[\s*|\s*\]\}$", "", key)
+    key = re.sub(r"^\[\s*|\s*\]$", "", key)
+    key = re.sub(r"^\{\s*|\s*\}$", "", key)
+    key = _strip_accents(key).lower()
+    key = re.sub(r"[^a-z0-9_]", "_", key)
+    key = re.sub(r"_+", "_", key).strip("_")
+    return key
+
+
+def _normalize_template_placeholders(template: str) -> str:
+    normalized = template or ""
+    for pattern in _LEGACY_VAR_PATTERNS:
+        normalized = pattern.sub(lambda m: "{{" + _normalize_variable_key(str(m.group(1) or "")) + "}}", normalized)
+    return normalized
+
+
 def _translate_prompt_value_to_english(value) -> str:
     """
     Converts dynamic prompt variable values to English before interpolation.
@@ -301,14 +328,19 @@ def _translate_prompt_value_to_english(value) -> str:
 
 
 def _render_prompt_template(template: str, data: dict | None) -> str:
-    raw = str(template or "").strip()
+    raw = _normalize_template_placeholders(str(template or "")).strip()
     if not raw:
         return ""
     payload = data if isinstance(data, dict) else {}
+    normalized_payload = {
+        _normalize_variable_key(str(k)): v
+        for k, v in payload.items()
+        if _normalize_variable_key(str(k))
+    }
 
     def _replace(match: re.Match[str]) -> str:
-        key = str(match.group(1) or "").strip()
-        val = payload.get(key)
+        key = _normalize_variable_key(str(match.group(1) or ""))
+        val = normalized_payload.get(key)
         if val is None:
             return ""
         return _translate_prompt_value_to_english(val)
