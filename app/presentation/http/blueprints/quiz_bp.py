@@ -20,6 +20,32 @@ _MAX_UPLOAD_SIZE_BYTES_BY_TYPE = {
 }
 
 
+def _validate_gemini_key_against_model(api_key: str, model: str) -> tuple[bool, str | None]:
+    key = (api_key or "").strip()
+    mdl = (model or "").strip()
+    if not key:
+        return False, "missing_api_key"
+    if not mdl:
+        return False, "missing_model"
+
+    # Lightweight validation endpoint: checks both key validity and model access.
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{mdl}"
+    try:
+        r = requests.get(url, params={"key": key}, timeout=15)
+    except requests.RequestException:
+        return False, "gemini_unreachable"
+
+    if r.status_code == 200:
+        return True, None
+    if r.status_code in (401, 403):
+        return False, "gemini_key_invalid_or_forbidden"
+    if r.status_code == 404:
+        return False, "gemini_model_unavailable"
+    if r.status_code == 429:
+        return False, "gemini_quota_exceeded"
+    return False, f"gemini_http_{r.status_code}"
+
+
 def _load_active_experience_by_slug(slug: str) -> dict | None:
     c = current_app.container
     rows = get_json(
@@ -135,6 +161,22 @@ def public_experience(slug: str):
         )
     except Exception as exc:
         return jsonify({"ok": False, "error": f"public_experience_exception:{exc}"}), 500
+
+
+@bp.post("/gemini/validate-key")
+def validate_gemini_key():
+    try:
+        payload = request.get_json(force=True) or {}
+        api_key = (payload.get("api_key") or "").strip()
+        model = (payload.get("model") or "gemini-2.5-flash-image").strip()
+
+        valid, err = _validate_gemini_key_against_model(api_key, model)
+        if not valid:
+            return jsonify({"ok": False, "valid": False, "error": err or "gemini_validation_failed"}), 400
+
+        return jsonify({"ok": True, "valid": True, "model": model}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "valid": False, "error": f"gemini_validate_exception:{exc}"}), 500
 
 
 @bp.post("/credentials")
