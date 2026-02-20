@@ -16,13 +16,17 @@ class GeminiImageClient(IImageGenerationClient):
             raise RuntimeError("missing_GEMINI_API_KEY")
 
     def _request_generation(self, payload: dict) -> dict:
-        model = self._s.gemini_image_model or "gemini-2.5-flash-image"
+        model = (self._s.gemini_image_model or "gemini-2.5-flash-image").strip()
+        api_key = (self._s.gemini_api_key or "").strip()
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={self._s.gemini_api_key}"
+            f"{model}:generateContent?key={api_key}"
         )
         r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=90)
-        r.raise_for_status()
+        if not r.ok:
+            body = (r.text or "").replace("\n", " ").strip()
+            body = body[:400] if body else ""
+            raise RuntimeError(f"gemini_http_{r.status_code}:{body}")
         data = r.json() or {}
 
         image_part = None
