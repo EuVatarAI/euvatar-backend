@@ -198,9 +198,9 @@ def _load_first_archetype(settings: Settings, experience_id: str) -> dict | None
 
 def _resolve_experience_gemini_key(settings: Settings, experience_id: str) -> str | None:
     """
-    Priority:
-    1) experiences.gemini_api_key (per experience, set in panel)
-    2) GEMINI_API_KEY from global settings (.env)
+    Strict mode:
+    - Use only experiences.gemini_api_key (per experience, set in panel).
+    - Do not fallback to global GEMINI_API_KEY.
     """
     try:
         rows = get_json(
@@ -214,9 +214,9 @@ def _resolve_experience_gemini_key(settings: Settings, experience_id: str) -> st
         if exp_key:
             return exp_key
     except Exception:
-        # Keep backward compatibility on environments without gemini_api_key column.
+        # If column/query is unavailable we keep behavior deterministic: no key resolved.
         pass
-    return settings.gemini_api_key
+    return None
 
 
 _VAR_TOKEN_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
@@ -514,6 +514,8 @@ def _process_job(settings: Settings, job: Job):
 
         # Preferred mode: Gemini generation. With photo when available; prompt-only when archetype allows it.
         effective_gemini_key = _resolve_experience_gemini_key(settings, job.experience_id)
+        if not effective_gemini_key:
+            raise RuntimeError("missing_experience_gemini_key")
         use_photo_prompt = bool((archetype or {}).get("use_photo_prompt"))
         can_prompt_only = bool(effective_gemini_key and (not photo_path) and archetype_prompt and (not use_photo_prompt))
         if effective_gemini_key and (photo_path or can_prompt_only):
@@ -578,7 +580,7 @@ def _process_job(settings: Settings, job: Job):
                     "generation_mode": generation_mode,
                     "use_photo_prompt": use_photo_prompt,
                     "has_photo_path": bool(photo_path),
-                    "gemini_key_source": "experience" if str(effective_gemini_key or "") != str(settings.gemini_api_key or "") else "global",
+                    "gemini_key_source": "experience",
                 },
             )
         else:
