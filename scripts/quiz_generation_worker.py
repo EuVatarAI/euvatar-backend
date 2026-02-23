@@ -270,6 +270,46 @@ _PROMPT_WORD_TRANSLATIONS = {
 }
 
 
+def _gemini_max_attempts() -> int:
+    try:
+        return max(1, int(os.getenv("QUIZ_GEMINI_MAX_ATTEMPTS", "3")))
+    except Exception:
+        return 3
+
+
+def _gemini_retry_base_delay_seconds() -> float:
+    try:
+        return max(0.1, float(os.getenv("QUIZ_GEMINI_RETRY_BASE_DELAY_SECONDS", "1.2")))
+    except Exception:
+        return 1.2
+
+
+def _is_retryable_gemini_error_message(message: str) -> bool:
+    text = (message or "").strip().lower()
+    if not text:
+        return False
+    if "gemini_no_image_in_response" in text:
+        return True
+    if "gemini_empty_image" in text:
+        return True
+    if "gemini_http_429" in text:
+        return True
+    if re.search(r"gemini_http_5\d\d", text):
+        return True
+    retryable_tokens = (
+        "timeout",
+        "timed out",
+        "temporarily unavailable",
+        "service unavailable",
+        "internal server error",
+        "connection reset",
+        "connection aborted",
+        "connection error",
+        "read error",
+    )
+    return any(token in text for token in retryable_tokens)
+
+
 def _strip_accents(text: str) -> str:
     return "".join(ch for ch in unicodedata.normalize("NFD", text or "") if unicodedata.category(ch) != "Mn")
 
@@ -521,40 +561,88 @@ def _process_job(settings: Settings, job: Job):
         if effective_gemini_key and (photo_path or can_prompt_only):
             gemini_settings = replace(settings, gemini_api_key=effective_gemini_key)
             gemini = GeminiImageClient(gemini_settings)
+            max_attempts = _gemini_max_attempts()
+            retry_base_delay = _gemini_retry_base_delay_seconds()
             if photo_path:
                 ref_bytes, ref_mime = _download_reference_image(settings, photo_path)
-                out, status = generate_editorial_image_uc(
-                    gemini,
-                    GenerateEditorialImageInput(
-                        gender=gender,
-                        hair_color=hair_color,
-                        reference_image_bytes=ref_bytes,
-                        reference_mime_type=ref_mime,
-                        prompt_override=archetype_prompt or None,
-                    ),
-                )
-                if status != 200 or not out.get("ok"):
-                    raise RuntimeError(str(out.get("error") or f"gemini_failed_status_{status}"))
-                generated_b64 = str(out.get("image_base64") or "")
-                generated_mime = str(out.get("mime_type") or "image/png")
-                prompt_applied = str(out.get("prompt_applied") or "")
-                model_name = out.get("model")
-                latency_ms = out.get("latency_ms")
                 generation_mode = "reference_photo"
             else:
                 prompt_applied = archetype_prompt or build_editorial_prompt(gender, hair_color)
-                t_gem = time.time()
-                raw = gemini.generate_from_prompt(prompt_applied)
-                latency_ms = int((time.time() - t_gem) * 1000)
-                generated_bytes_raw = raw.get("image_bytes") or b""
-                generated_b64 = base64.b64encode(generated_bytes_raw).decode("ascii") if generated_bytes_raw else ""
-                generated_mime = str(raw.get("mime_type") or "image/png")
-                model_name = raw.get("model")
                 generation_mode = "prompt_only"
 
-            generated_bytes = base64.b64decode(generated_b64) if generated_b64 else b""
-            if not generated_bytes:
-                raise RuntimeError("gemini_empty_image")
+            generated_bytes = b""
+            generated_mime = "image/png"
+            model_name = None
+            latency_ms = None
+            last_err = None
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    if photo_path:
+                        out, status = generate_editorial_image_uc(
+                            gemini,
+                            GenerateEditorialImageInput(
+                                gender=gender,
+                                hair_color=hair_color,
+                                reference_image_bytes=ref_bytes,
+                                reference_mime_type=ref_mime,
+                                prompt_override=archetype_prompt or None,
+                            ),
+                        )
+                        if status != 200 or not out.get("ok"):
+                            raise RuntimeError(str(out.get("error") or f"gemini_failed_status_{status}"))
+                        generated_b64 = str(out.get("image_base64") or "")
+                        generated_mime = str(out.get("mime_type") or "image/png")
+                        prompt_applied = str(out.get("prompt_applied") or "")
+                        model_name = out.get("model")
+                        latency_ms = out.get("latency_ms")
+                        generated_bytes = base64.b64decode(generated_b64) if generated_b64 else b""
+                    else:
+                        t_gem = time.time()
+                        raw = gemini.generate_from_prompt(prompt_applied)
+                        latency_ms = int((time.time() - t_gem) * 1000)
+                        generated_bytes = raw.get("image_bytes") or b""
+                        generated_mime = str(raw.get("mime_type") or "image/png")
+                        model_name = raw.get("model")
+
+                    if not generated_bytes:
+                        raise RuntimeError("gemini_empty_image")
+
+                    if attempt > 1:
+                        _write_generation_log(
+                            settings,
+                            job.id,
+                            level="info",
+                            event="gemini_retry_recovered",
+                            message="Gemini succeeded after retry",
+                            payload={"attempt": attempt, "max_attempts": max_attempts},
+                        )
+                    break
+                except Exception as exc:
+                    last_err = exc
+                    err_str = str(exc)
+                    retryable = attempt < max_attempts and _is_retryable_gemini_error_message(err_str)
+                    _write_generation_log(
+                        settings,
+                        job.id,
+                        level="warning" if retryable else "error",
+                        event="gemini_attempt_failed",
+                        message="Gemini generation attempt failed",
+                        payload={
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "retryable": retryable,
+                            "error": err_str[:1000],
+                        },
+                    )
+                    if not retryable:
+                        raise
+                    sleep_s = retry_base_delay * (2 ** (attempt - 1))
+                    time.sleep(sleep_s)
+
+            if last_err is not None and not generated_bytes:
+                raise last_err
+
             out_path = _upload_output(
                 settings,
                 job.experience_id,
