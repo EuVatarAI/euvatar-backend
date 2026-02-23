@@ -30,17 +30,43 @@ class GeminiImageClient(IImageGenerationClient):
         data = r.json() or {}
 
         image_part = None
+        text_part = ""
+        finish_reasons: list[str] = []
         for cand in data.get("candidates", []) or []:
+            reason = str(cand.get("finishReason") or cand.get("finish_reason") or "").strip()
+            if reason:
+                finish_reasons.append(reason)
             content = cand.get("content") or {}
             for part in content.get("parts", []) or []:
                 inline = part.get("inlineData") or part.get("inline_data")
                 if inline and inline.get("data"):
                     image_part = inline
                     break
+                if (not text_part) and part.get("text"):
+                    text_part = str(part.get("text") or "").strip()
             if image_part:
                 break
 
         if not image_part:
+            # Include provider diagnostics to make production failures actionable.
+            prompt_feedback = data.get("promptFeedback") or data.get("prompt_feedback") or {}
+            block_reason = str(prompt_feedback.get("blockReason") or prompt_feedback.get("block_reason") or "").strip()
+            safety = prompt_feedback.get("safetyRatings") or prompt_feedback.get("safety_ratings") or []
+            safety_compact = str(safety)[:240] if safety else ""
+            reason_compact = ",".join(finish_reasons)[:120] if finish_reasons else ""
+            text_compact = text_part.replace("\n", " ").strip()[:180] if text_part else ""
+            details = []
+            if reason_compact:
+                details.append(f"finish={reason_compact}")
+            if block_reason:
+                details.append(f"block={block_reason}")
+            if safety_compact:
+                details.append(f"safety={safety_compact}")
+            if text_compact:
+                details.append(f"text={text_compact}")
+            suffix = ";".join(details)
+            if suffix:
+                raise RuntimeError(f"gemini_no_image_in_response:{suffix}")
             raise RuntimeError("gemini_no_image_in_response")
 
         out_b64 = image_part.get("data") or ""
