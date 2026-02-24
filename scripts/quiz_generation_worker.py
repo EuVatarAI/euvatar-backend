@@ -269,6 +269,56 @@ _PROMPT_WORD_TRANSLATIONS = {
     "baixo": "low",
 }
 
+_PROMPT_KEY_ALIASES = {
+    "genero_para_criacao_do_avatar": [
+        "genero_para_criacao_do_avatar",
+        "genero",
+        "sexo",
+        "gender",
+    ],
+    "cor_do_seu_cabelo": [
+        "cor_do_seu_cabelo",
+        "cor_do_cabelo",
+        "cor_cabelo",
+        "hair_color",
+        "cor_do_cabelo_participante",
+    ],
+}
+
+
+def _resolve_prompt_variable_value(key: str, normalized_payload: dict[str, object]) -> object | None:
+    """
+    Resolves a prompt variable value with alias fallback.
+    This avoids silent empty replacements when variable keys differ slightly
+    between builder/frontend and archetype prompt templates.
+    """
+    if not key:
+        return None
+
+    direct = normalized_payload.get(key)
+    if direct is not None:
+        return direct
+
+    for alias in _PROMPT_KEY_ALIASES.get(key, []):
+        val = normalized_payload.get(alias)
+        if val is not None:
+            return val
+
+    # Heuristic fallback for common semantic groups
+    if "genero" in key or "sexo" in key or key == "gender":
+        for alias in ("genero_para_criacao_do_avatar", "genero", "sexo", "gender"):
+            val = normalized_payload.get(alias)
+            if val is not None:
+                return val
+
+    if "cabelo" in key or "hair" in key:
+        for alias in ("cor_do_seu_cabelo", "cor_do_cabelo", "cor_cabelo", "hair_color"):
+            val = normalized_payload.get(alias)
+            if val is not None:
+                return val
+
+    return None
+
 
 def _gemini_max_attempts() -> int:
     try:
@@ -380,7 +430,7 @@ def _render_prompt_template(template: str, data: dict | None) -> str:
 
     def _replace(match: re.Match[str]) -> str:
         key = _normalize_variable_key(str(match.group(1) or ""))
-        val = normalized_payload.get(key)
+        val = _resolve_prompt_variable_value(key, normalized_payload)
         if val is None:
             return ""
         return _translate_prompt_value_to_english(val)
