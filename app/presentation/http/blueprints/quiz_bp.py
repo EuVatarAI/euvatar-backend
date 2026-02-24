@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import os
 from flask import Blueprint, current_app, jsonify, request
 
 from app.infrastructure.supabase_rest import get_json, rest_headers
@@ -14,7 +15,7 @@ _ALLOWED_MODES = {"mobile", "totem", "auto"}
 _ALLOWED_UPLOAD_TYPES = {"user_photo", "video", "asset"}
 _ALLOWED_GENERATION_KINDS = {"credential_card", "quiz_result", "photo_with"}
 _MAX_UPLOAD_SIZE_BYTES_BY_TYPE = {
-    "user_photo": 10 * 1024 * 1024,  # 10 MB
+    "user_photo": int(os.getenv("QUIZ_MAX_USER_PHOTO_MB", "20")) * 1024 * 1024,  # default 20 MB
     "video": 100 * 1024 * 1024,      # 100 MB
     "asset": 20 * 1024 * 1024,       # 20 MB
 }
