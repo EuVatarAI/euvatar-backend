@@ -1,6 +1,7 @@
 import os
 import unittest
 from unittest.mock import patch, Mock
+import os
 
 from app.presentation.http.server import create_app
 
@@ -97,7 +98,11 @@ class QuizPhase1EndpointTests(unittest.TestCase):
         get_json.return_value = []
         resp = self.client.post(
             "/credentials",
-            json={"experience_id": "exp-x", "data": {"name": "Teste"}, "mode_used": "mobile"},
+            json={
+                "experience_id": "exp-x",
+                "data": {"name": "Teste"},
+                "mode_used": "mobile",
+            },
         )
         payload = resp.get_json()
         self.assertEqual(resp.status_code, 404)
@@ -110,12 +115,18 @@ class QuizPhase1EndpointTests(unittest.TestCase):
         get_json.return_value = [{"id": "exp-1", "status": "active"}]
         sign_resp = Mock()
         sign_resp.ok = True
-        sign_resp.json.return_value = {"signedURL": "/object/upload/sign/avatar-media/quiz/exp-1/user_photo/a.jpg?token=t"}
+        sign_resp.json.return_value = {
+            "signedURL": "/object/upload/sign/avatar-media/quiz/exp-1/user_photo/a.jpg?token=t"
+        }
         post.return_value = sign_resp
 
         resp = self.client.post(
             "/uploads/signed-url",
-            json={"experience_id": "exp-1", "type": "user_photo", "file_size_bytes": 1024},
+            json={
+                "experience_id": "exp-1",
+                "type": "user_photo",
+                "file_size_bytes": 1024,
+            },
         )
         payload = resp.get_json()
         self.assertEqual(resp.status_code, 200)
@@ -140,7 +151,11 @@ class QuizPhase1EndpointTests(unittest.TestCase):
         get_json.return_value = [{"id": "exp-1", "status": "active"}]
         resp = self.client.post(
             "/uploads/signed-url",
-            json={"experience_id": "exp-1", "type": "user_photo", "file_size_bytes": 99_999_999},
+            json={
+                "experience_id": "exp-1",
+                "type": "user_photo",
+                "file_size_bytes": 99_999_999,
+            },
         )
         payload = resp.get_json()
         self.assertEqual(resp.status_code, 413)
@@ -176,6 +191,60 @@ class QuizPhase1EndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(payload["ok"])
 
+    @patch("app.presentation.http.blueprints.quiz_bp.requests.patch")
+    @patch("app.presentation.http.blueprints.quiz_bp.requests.post")
+    @patch("app.presentation.http.blueprints.quiz_bp.get_json")
+    def test_confirm_upload_eager_generation_returns_generation_id(
+        self, get_json, post, patch_req
+    ):
+        prev = os.environ.get("QUIZ_EAGER_GENERATION_ON_UPLOAD")
+        os.environ["QUIZ_EAGER_GENERATION_ON_UPLOAD"] = "true"
+        try:
+            get_json.side_effect = [
+                [{"id": "exp-1", "status": "active"}],  # active experience check
+                [
+                    {"id": "cred-1", "experience_id": "exp-1"}
+                ],  # credential ownership check
+                [
+                    {
+                        "id": "exp-1",
+                        "type": "quiz",
+                        "status": "active",
+                        "max_generations": 100,
+                    }
+                ],  # eager exp load
+                [],  # done generation count
+                [],  # reusable generation lookup
+            ]
+            up_resp = Mock()
+            up_resp.ok = True
+            gen_insert_resp = Mock()
+            gen_insert_resp.ok = True
+            gen_insert_resp.json.return_value = [{"id": "gen-eager-1"}]
+            post.side_effect = [up_resp, gen_insert_resp]
+            patch_resp = Mock()
+            patch_resp.ok = True
+            patch_req.return_value = patch_resp
+
+            resp = self.client.post(
+                "/uploads/confirm",
+                json={
+                    "experience_id": "exp-1",
+                    "credential_id": "cred-1",
+                    "storage_path": "quiz/exp-1/user_photo/file.jpg",
+                    "type": "user_photo",
+                },
+            )
+            payload = resp.get_json()
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["generation_id"], "gen-eager-1")
+        finally:
+            if prev is None:
+                os.environ.pop("QUIZ_EAGER_GENERATION_ON_UPLOAD", None)
+            else:
+                os.environ["QUIZ_EAGER_GENERATION_ON_UPLOAD"] = prev
+
     @patch("app.presentation.http.blueprints.quiz_bp.get_json")
     def test_confirm_upload_invalid_scope(self, get_json):
         get_json.side_effect = [
@@ -201,8 +270,16 @@ class QuizPhase1EndpointTests(unittest.TestCase):
     def test_create_generation_success(self, get_json, post):
         # experience lookup, credential lookup, done-count lookup
         get_json.side_effect = [
-            [{"id": "exp-1", "type": "quiz", "status": "active", "max_generations": 100}],
+            [
+                {
+                    "id": "exp-1",
+                    "type": "quiz",
+                    "status": "active",
+                    "max_generations": 100,
+                }
+            ],
             [{"id": "cred-1", "experience_id": "exp-1"}],
+            [],
             [],
         ]
         post_resp = Mock()
@@ -218,6 +295,44 @@ class QuizPhase1EndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["generation_id"], "gen-1")
+        self.assertFalse(payload["reused"])
+
+    @patch("app.presentation.http.blueprints.quiz_bp.requests.post")
+    @patch("app.presentation.http.blueprints.quiz_bp.get_json")
+    def test_create_generation_reuses_existing(self, get_json, post):
+        # experience lookup, credential lookup, done-count lookup, reusable lookup
+        get_json.side_effect = [
+            [
+                {
+                    "id": "exp-1",
+                    "type": "quiz",
+                    "status": "active",
+                    "max_generations": 100,
+                }
+            ],
+            [{"id": "cred-1", "experience_id": "exp-1"}],
+            [],
+            [
+                {
+                    "id": "gen-existing",
+                    "status": "processing",
+                    "kind": "quiz_result",
+                    "credential_id": "cred-1",
+                    "experience_id": "exp-1",
+                }
+            ],
+        ]
+
+        resp = self.client.post(
+            "/generations",
+            json={"experience_id": "exp-1", "credential_id": "cred-1"},
+        )
+        payload = resp.get_json()
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["generation_id"], "gen-existing")
+        self.assertTrue(payload["reused"])
+        post.assert_not_called()
 
     @patch("app.presentation.http.blueprints.quiz_bp.get_json")
     def test_create_generation_limit_exceeded(self, get_json):
@@ -268,7 +383,9 @@ class QuizPhase1EndpointTests(unittest.TestCase):
         ]
         post_resp = Mock()
         post_resp.ok = True
-        post_resp.json.return_value = {"signedURL": "/object/sign/avatar-media/quiz/exp-1/generations/gen-1.svg?token=abc"}
+        post_resp.json.return_value = {
+            "signedURL": "/object/sign/avatar-media/quiz/exp-1/generations/gen-1.svg?token=abc"
+        }
         post_req.return_value = post_resp
 
         resp = self.client.get("/generations/gen-1")
@@ -276,7 +393,10 @@ class QuizPhase1EndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["status"], "done")
-        self.assertIn("/storage/v1/object/sign/avatar-media/quiz/exp-1/generations/gen-1.svg?token=abc", payload["output_url"])
+        self.assertIn(
+            "/storage/v1/object/sign/avatar-media/quiz/exp-1/generations/gen-1.svg?token=abc",
+            payload["output_url"],
+        )
 
 
 if __name__ == "__main__":

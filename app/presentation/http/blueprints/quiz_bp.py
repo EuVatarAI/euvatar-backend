@@ -7,21 +7,36 @@ import os
 from flask import Blueprint, current_app, jsonify, request
 
 from app.infrastructure.supabase_rest import get_json, rest_headers
+from app.shared.setup_logger import LOGGER
 import requests
 
 bp = Blueprint("quiz_phase1", __name__)
+logger = LOGGER.get_logger(__name__)
 
 _ALLOWED_MODES = {"mobile", "totem", "auto"}
 _ALLOWED_UPLOAD_TYPES = {"user_photo", "video", "asset"}
 _ALLOWED_GENERATION_KINDS = {"credential_card", "quiz_result", "photo_with"}
 _MAX_UPLOAD_SIZE_BYTES_BY_TYPE = {
-    "user_photo": int(os.getenv("QUIZ_MAX_USER_PHOTO_MB", "20")) * 1024 * 1024,  # default 20 MB
-    "video": 100 * 1024 * 1024,      # 100 MB
-    "asset": 20 * 1024 * 1024,       # 20 MB
+    "user_photo": int(os.getenv("QUIZ_MAX_USER_PHOTO_MB", "20"))
+    * 1024
+    * 1024,  # default 20 MB
+    "video": 100 * 1024 * 1024,  # 100 MB
+    "asset": 20 * 1024 * 1024,  # 20 MB
 }
 
 
-def _validate_gemini_key_against_model(api_key: str, model: str) -> tuple[bool, str | None]:
+def _is_eager_generation_enabled() -> bool:
+    return os.getenv("QUIZ_EAGER_GENERATION_ON_UPLOAD", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _validate_gemini_key_against_model(
+    api_key: str, model: str
+) -> tuple[bool, str | None]:
     key = (api_key or "").strip()
     mdl = (model or "").strip()
     if not key:
@@ -83,7 +98,9 @@ def _load_experience_by_id(experience_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
-def _load_credential_for_experience(credential_id: str, experience_id: str) -> dict | None:
+def _load_credential_for_experience(
+    credential_id: str, experience_id: str
+) -> dict | None:
     c = current_app.container
     rows = get_json(
         c.settings,
@@ -115,10 +132,82 @@ def _kind_from_experience_type(experience_type: str) -> str:
     return "quiz_result"
 
 
+def _find_reusable_generation(credential_id: str, kind: str) -> dict | None:
+    c = current_app.container
+    rows = get_json(
+        c.settings,
+        "generations",
+        "id,status,kind,credential_id,experience_id",
+        {
+            "credential_id": f"eq.{credential_id}",
+            "kind": f"eq.{kind}",
+            "status": "in.(pending,processing,done)",
+            "order": "created_at.desc",
+        },
+        limit=1,
+    )
+    return rows[0] if rows else None
+
+
+def _insert_generation(experience_id: str, credential_id: str, kind: str) -> str:
+    c = current_app.container
+    url = f"{c.settings.supabase_url}/rest/v1/generations"
+    r = requests.post(
+        url,
+        headers={
+            **rest_headers(c.settings),
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        },
+        json=[
+            {
+                "experience_id": experience_id,
+                "credential_id": credential_id,
+                "kind": kind,
+                "status": "pending",
+            }
+        ],
+        timeout=20,
+    )
+    if not r.ok:
+        raise RuntimeError(f"generation_insert_failed:{r.text[:180]}")
+    rows = r.json() or []
+    if not rows or not rows[0].get("id"):
+        raise RuntimeError("generation_insert_empty")
+    return str(rows[0]["id"])
+
+
+def _create_or_reuse_generation(
+    experience_id: str, credential_id: str, kind: str
+) -> tuple[str, bool]:
+    reusable = _find_reusable_generation(credential_id, kind)
+    if reusable and reusable.get("id"):
+        gid = str(reusable["id"])
+        logger.info(
+            "[quiz] reuse_generation generation_id=%s credential_id=%s kind=%s status=%s",
+            gid,
+            credential_id,
+            kind,
+            str(reusable.get("status") or ""),
+        )
+        return gid, True
+
+    generation_id = _insert_generation(experience_id, credential_id, kind)
+    logger.info(
+        "[quiz] create_generation generation_id=%s credential_id=%s kind=%s",
+        generation_id,
+        credential_id,
+        kind,
+    )
+    return generation_id, False
+
+
 def _build_signed_download_url(storage_path: str, expires_in: int = 600) -> str | None:
     c = current_app.container
     bucket = c.settings.supabase_bucket
-    sign_url = f"{c.settings.supabase_url}/storage/v1/object/sign/{bucket}/{storage_path}"
+    sign_url = (
+        f"{c.settings.supabase_url}/storage/v1/object/sign/{bucket}/{storage_path}"
+    )
     r = requests.post(
         sign_url,
         headers={**rest_headers(c.settings), "Content-Type": "application/json"},
@@ -135,7 +224,11 @@ def _build_signed_download_url(storage_path: str, expires_in: int = 600) -> str 
         signed = f"/object/sign/{bucket}/{path}?token={token}"
     if not signed:
         return None
-    return signed if str(signed).startswith("http") else f"{c.settings.supabase_url}/storage/v1{signed}"
+    return (
+        signed
+        if str(signed).startswith("http")
+        else f"{c.settings.supabase_url}/storage/v1{signed}"
+    )
 
 
 @bp.get("/public/experience/<slug>")
@@ -147,7 +240,10 @@ def public_experience(slug: str):
 
         exp = _load_active_experience_by_slug(s)
         if not exp:
-            return jsonify({"ok": False, "error": "experience_not_found_or_inactive"}), 404
+            return (
+                jsonify({"ok": False, "error": "experience_not_found_or_inactive"}),
+                404,
+            )
 
         return (
             jsonify(
@@ -161,7 +257,10 @@ def public_experience(slug: str):
             200,
         )
     except Exception as exc:
-        return jsonify({"ok": False, "error": f"public_experience_exception:{exc}"}), 500
+        return (
+            jsonify({"ok": False, "error": f"public_experience_exception:{exc}"}),
+            500,
+        )
 
 
 @bp.post("/gemini/validate-key")
@@ -173,11 +272,29 @@ def validate_gemini_key():
 
         valid, err = _validate_gemini_key_against_model(api_key, model)
         if not valid:
-            return jsonify({"ok": False, "valid": False, "error": err or "gemini_validation_failed"}), 400
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "valid": False,
+                        "error": err or "gemini_validation_failed",
+                    }
+                ),
+                400,
+            )
 
         return jsonify({"ok": True, "valid": True, "model": model}), 200
     except Exception as exc:
-        return jsonify({"ok": False, "valid": False, "error": f"gemini_validate_exception:{exc}"}), 500
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "valid": False,
+                    "error": f"gemini_validate_exception:{exc}",
+                }
+            ),
+            500,
+        )
 
 
 @bp.post("/credentials")
@@ -197,7 +314,10 @@ def create_credential():
             return jsonify({"ok": False, "error": "invalid_mode_used"}), 400
 
         if not _load_active_experience_by_id(experience_id):
-            return jsonify({"ok": False, "error": "experience_not_found_or_inactive"}), 404
+            return (
+                jsonify({"ok": False, "error": "experience_not_found_or_inactive"}),
+                404,
+            )
 
         url = f"{c.settings.supabase_url}/rest/v1/credentials"
         req_rows = [
@@ -209,12 +329,21 @@ def create_credential():
         ]
         r = requests.post(
             url,
-            headers={**rest_headers(c.settings), "Content-Type": "application/json", "Prefer": "return=representation"},
+            headers={
+                **rest_headers(c.settings),
+                "Content-Type": "application/json",
+                "Prefer": "return=representation",
+            },
             json=req_rows,
             timeout=20,
         )
         if not r.ok:
-            return jsonify({"ok": False, "error": f"credential_insert_failed:{r.text[:180]}"}), 502
+            return (
+                jsonify(
+                    {"ok": False, "error": f"credential_insert_failed:{r.text[:180]}"}
+                ),
+                502,
+            )
 
         rows = r.json() or []
         if not rows or not rows[0].get("id"):
@@ -222,7 +351,10 @@ def create_credential():
 
         return jsonify({"ok": True, "credential_id": rows[0]["id"]}), 201
     except Exception as exc:
-        return jsonify({"ok": False, "error": f"create_credential_exception:{exc}"}), 500
+        return (
+            jsonify({"ok": False, "error": f"create_credential_exception:{exc}"}),
+            500,
+        )
 
 
 @bp.post("/uploads/signed-url")
@@ -250,7 +382,10 @@ def create_signed_upload_url():
                 return jsonify({"ok": False, "error": "file_too_large"}), 413
 
         if not _load_active_experience_by_id(experience_id):
-            return jsonify({"ok": False, "error": "experience_not_found_or_inactive"}), 404
+            return (
+                jsonify({"ok": False, "error": "experience_not_found_or_inactive"}),
+                404,
+            )
 
         ext_by_type = {"user_photo": "jpg", "video": "mp4", "asset": "bin"}
         storage_path = f"quiz/{experience_id}/{upload_type}/{uuid.uuid4().hex}.{ext_by_type[upload_type]}"
@@ -264,10 +399,18 @@ def create_signed_upload_url():
             timeout=20,
         )
         if not r.ok:
-            return jsonify({"ok": False, "error": f"signed_url_failed:{r.text[:180]}"}), 502
+            return (
+                jsonify({"ok": False, "error": f"signed_url_failed:{r.text[:180]}"}),
+                502,
+            )
 
         data = r.json() or {}
-        signed_url = data.get("signedURL") or data.get("signedUrl") or data.get("uploadURL") or data.get("upload_url")
+        signed_url = (
+            data.get("signedURL")
+            or data.get("signedUrl")
+            or data.get("uploadURL")
+            or data.get("upload_url")
+        )
         if not signed_url and data.get("url") and data.get("token"):
             base_url = str(data.get("url"))
             token = str(data.get("token"))
@@ -277,10 +420,22 @@ def create_signed_upload_url():
                 sep = "&" if "?" in base_url else "?"
                 signed_url = f"{base_url}{sep}token={token}"
         if not signed_url:
-            return jsonify({"ok": False, "error": "signed_url_missing_in_response"}), 502
-        upload_url = signed_url if str(signed_url).startswith("http") else f"{c.settings.supabase_url}/storage/v1{signed_url}"
+            return (
+                jsonify({"ok": False, "error": "signed_url_missing_in_response"}),
+                502,
+            )
+        upload_url = (
+            signed_url
+            if str(signed_url).startswith("http")
+            else f"{c.settings.supabase_url}/storage/v1{signed_url}"
+        )
 
-        return jsonify({"ok": True, "upload_url": upload_url, "storage_path": storage_path}), 200
+        return (
+            jsonify(
+                {"ok": True, "upload_url": upload_url, "storage_path": storage_path}
+            ),
+            200,
+        )
     except Exception as exc:
         return jsonify({"ok": False, "error": f"signed_url_exception:{exc}"}), 500
 
@@ -305,9 +460,15 @@ def confirm_upload():
             return jsonify({"ok": False, "error": "invalid_upload_type"}), 400
 
         if not _load_active_experience_by_id(experience_id):
-            return jsonify({"ok": False, "error": "experience_not_found_or_inactive"}), 404
+            return (
+                jsonify({"ok": False, "error": "experience_not_found_or_inactive"}),
+                404,
+            )
         if not _load_credential_for_experience(credential_id, experience_id):
-            return jsonify({"ok": False, "error": "credential_not_found_for_experience"}), 404
+            return (
+                jsonify({"ok": False, "error": "credential_not_found_for_experience"}),
+                404,
+            )
         if not storage_path.startswith(f"quiz/{experience_id}/"):
             return jsonify({"ok": False, "error": "invalid_storage_path_scope"}), 400
 
@@ -326,20 +487,81 @@ def confirm_upload():
             timeout=20,
         )
         if not up_resp.ok:
-            return jsonify({"ok": False, "error": f"upload_audit_insert_failed:{up_resp.text[:180]}"}), 502
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": f"upload_audit_insert_failed:{up_resp.text[:180]}",
+                    }
+                ),
+                502,
+            )
 
+        generation_id: str | None = None
         if upload_type == "user_photo":
-            cred_patch_url = f"{c.settings.supabase_url}/rest/v1/credentials?id=eq.{credential_id}"
+            cred_patch_url = (
+                f"{c.settings.supabase_url}/rest/v1/credentials?id=eq.{credential_id}"
+            )
             patch_resp = requests.patch(
                 cred_patch_url,
-                headers={**rest_headers(c.settings), "Content-Type": "application/json"},
+                headers={
+                    **rest_headers(c.settings),
+                    "Content-Type": "application/json",
+                },
                 json={"photo_path": storage_path},
                 timeout=20,
             )
             if not patch_resp.ok:
-                return jsonify({"ok": False, "error": f"credential_photo_update_failed:{patch_resp.text[:180]}"}), 502
+                return (
+                    jsonify(
+                        {
+                            "ok": False,
+                            "error": f"credential_photo_update_failed:{patch_resp.text[:180]}",
+                        }
+                    ),
+                    502,
+                )
 
-        return jsonify({"ok": True}), 200
+            if _is_eager_generation_enabled():
+                try:
+                    exp = _load_experience_by_id(experience_id)
+                    if exp and str(exp.get("status") or "").strip().lower() in {
+                        "active",
+                        "published",
+                    }:
+                        max_generations = int(exp.get("max_generations") or 0)
+                        if (
+                            max_generations > 0
+                            and _count_done_generations(experience_id)
+                            >= max_generations
+                        ):
+                            logger.warning(
+                                "[quiz] eager_generation_skipped_limit experience_id=%s credential_id=%s",
+                                experience_id,
+                                credential_id,
+                            )
+                        else:
+                            kind = _kind_from_experience_type(
+                                str(exp.get("type") or "")
+                            )
+                            generation_id, reused = _create_or_reuse_generation(
+                                experience_id, credential_id, kind
+                            )
+                            logger.info(
+                                "[quiz] eager_generation_started generation_id=%s credential_id=%s reused=%s",
+                                generation_id,
+                                credential_id,
+                                reused,
+                            )
+                except Exception as eager_exc:
+                    logger.error(
+                        "[quiz] eager_generation_failed experience_id=%s credential_id=%s error=%s",
+                        experience_id,
+                        credential_id,
+                        str(eager_exc),
+                    )
+
+        return jsonify({"ok": True, "generation_id": generation_id}), 200
     except Exception as exc:
         return jsonify({"ok": False, "error": f"confirm_upload_exception:{exc}"}), 500
 
@@ -359,42 +581,50 @@ def create_generation():
             return jsonify({"ok": False, "error": "missing_credential_id"}), 400
 
         exp = _load_experience_by_id(experience_id)
-        if not exp or str(exp.get("status") or "").strip().lower() not in {"active", "published"}:
-            return jsonify({"ok": False, "error": "experience_not_found_or_inactive"}), 404
+        if not exp or str(exp.get("status") or "").strip().lower() not in {
+            "active",
+            "published",
+        }:
+            return (
+                jsonify({"ok": False, "error": "experience_not_found_or_inactive"}),
+                404,
+            )
         if not _load_credential_for_experience(credential_id, experience_id):
-            return jsonify({"ok": False, "error": "credential_not_found_for_experience"}), 404
+            return (
+                jsonify({"ok": False, "error": "credential_not_found_for_experience"}),
+                404,
+            )
 
         max_generations = int(exp.get("max_generations") or 0)
-        if max_generations > 0 and _count_done_generations(experience_id) >= max_generations:
+        if (
+            max_generations > 0
+            and _count_done_generations(experience_id) >= max_generations
+        ):
             return jsonify({"ok": False, "error": "generation_limit_exceeded"}), 429
 
         kind = kind_in or _kind_from_experience_type(str(exp.get("type") or ""))
         if kind not in _ALLOWED_GENERATION_KINDS:
             return jsonify({"ok": False, "error": "invalid_generation_kind"}), 400
 
-        url = f"{c.settings.supabase_url}/rest/v1/generations"
-        r = requests.post(
-            url,
-            headers={**rest_headers(c.settings), "Content-Type": "application/json", "Prefer": "return=representation"},
-            json=[
-                {
-                    "experience_id": experience_id,
-                    "credential_id": credential_id,
-                    "kind": kind,
-                    "status": "pending",
-                }
-            ],
-            timeout=20,
+        generation_id, reused = _create_or_reuse_generation(
+            experience_id, credential_id, kind
         )
-        if not r.ok:
-            return jsonify({"ok": False, "error": f"generation_insert_failed:{r.text[:180]}"}), 502
-        rows = r.json() or []
-        if not rows or not rows[0].get("id"):
-            return jsonify({"ok": False, "error": "generation_insert_empty"}), 502
-
-        return jsonify({"ok": True, "generation_id": rows[0]["id"]}), 201
+        status = 200 if reused else 201
+        return (
+            jsonify({"ok": True, "generation_id": generation_id, "reused": reused}),
+            status,
+        )
     except Exception as exc:
-        return jsonify({"ok": False, "error": f"create_generation_exception:{exc}"}), 500
+        logger.error(
+            "[quiz] create_generation_exception experience_id=%s credential_id=%s error=%s",
+            (request.get_json(silent=True) or {}).get("experience_id"),
+            (request.get_json(silent=True) or {}).get("credential_id"),
+            str(exc),
+        )
+        return (
+            jsonify({"ok": False, "error": f"create_generation_exception:{exc}"}),
+            500,
+        )
 
 
 @bp.get("/generations/<generation_id>")
@@ -418,7 +648,9 @@ def get_generation_status(generation_id: str):
         row = rows[0]
         output_url = row.get("output_url")
         if row.get("status") == "done" and not output_url and row.get("output_path"):
-            output_url = _build_signed_download_url(str(row.get("output_path")), expires_in=900)
+            output_url = _build_signed_download_url(
+                str(row.get("output_path")), expires_in=900
+            )
         return (
             jsonify(
                 {
@@ -434,7 +666,10 @@ def get_generation_status(generation_id: str):
             200,
         )
     except Exception as exc:
-        return jsonify({"ok": False, "error": f"generation_status_exception:{exc}"}), 500
+        return (
+            jsonify({"ok": False, "error": f"generation_status_exception:{exc}"}),
+            500,
+        )
 
 
 @bp.get("/generations/<generation_id>/logs")
