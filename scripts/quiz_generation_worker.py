@@ -613,6 +613,8 @@ def _process_job(settings: Settings, job: Job):
             gemini = GeminiImageClient(gemini_settings)
             max_attempts = _gemini_max_attempts()
             retry_base_delay = _gemini_retry_base_delay_seconds()
+            ref_bytes = b""
+            ref_mime = "image/jpeg"
             if photo_path:
                 ref_bytes, ref_mime = _download_reference_image(settings, photo_path)
                 generation_mode = "reference_photo"
@@ -691,7 +693,41 @@ def _process_job(settings: Settings, job: Job):
                     time.sleep(sleep_s)
 
             if last_err is not None and not generated_bytes:
-                raise last_err
+                last_err_str = str(last_err)
+                if not _is_retryable_gemini_error_message(last_err_str):
+                    raise last_err
+
+                # Graceful fallback for transient provider outages: keep user flow alive
+                # with the captured photo (if present) or SVG card output.
+                if photo_path and ref_bytes:
+                    generated_bytes = ref_bytes
+                    generated_mime = ref_mime or "image/jpeg"
+                    _write_generation_log(
+                        settings,
+                        job.id,
+                        level="warning",
+                        event="gemini_fallback_reference_image",
+                        message="Gemini failed after retries; using reference photo fallback",
+                        payload={
+                            "error": last_err_str[:1000],
+                            "max_attempts": max_attempts,
+                            "mime_type": generated_mime,
+                        },
+                    )
+                else:
+                    generated_bytes = _build_svg_card(job, cred)
+                    generated_mime = "image/svg+xml"
+                    _write_generation_log(
+                        settings,
+                        job.id,
+                        level="warning",
+                        event="gemini_fallback_svg_on_retryable_error",
+                        message="Gemini failed after retries; using SVG fallback",
+                        payload={
+                            "error": last_err_str[:1000],
+                            "max_attempts": max_attempts,
+                        },
+                    )
 
             out_path = _upload_output(
                 settings,
