@@ -54,7 +54,9 @@ def _estimated_cost_usd(job: Job) -> float:
     # Allows tuning by kind via env while keeping a safe default.
     default = float(os.getenv("QUIZ_GENERATION_ESTIMATED_COST_USD", "0.04"))
     by_kind = {
-        "credential_card": float(os.getenv("QUIZ_COST_CREDENTIAL_CARD_USD", str(default))),
+        "credential_card": float(
+            os.getenv("QUIZ_COST_CREDENTIAL_CARD_USD", str(default))
+        ),
         "quiz_result": float(os.getenv("QUIZ_COST_QUIZ_RESULT_USD", str(default))),
         "photo_with": float(os.getenv("QUIZ_COST_PHOTO_WITH_USD", str(default))),
     }
@@ -100,11 +102,17 @@ def _now_iso() -> str:
 
 
 def _claim_job(settings: Settings, job_id: str) -> Job | None:
-    url = f"{settings.supabase_url}/rest/v1/generations?id=eq.{job_id}&status=eq.pending"
+    url = (
+        f"{settings.supabase_url}/rest/v1/generations?id=eq.{job_id}&status=eq.pending"
+    )
     body = {"status": "processing", "updated_at": _now_iso(), "error_message": None}
     r = requests.patch(
         url,
-        headers={**rest_headers(settings), "Content-Type": "application/json", "Prefer": "return=representation"},
+        headers={
+            **rest_headers(settings),
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        },
         json=body,
         timeout=20,
     )
@@ -123,7 +131,13 @@ def _claim_job(settings: Settings, job_id: str) -> Job | None:
 
 
 def _load_credential_data(settings: Settings, credential_id: str) -> dict:
-    rows = get_json(settings, "credentials", "id,data_json,photo_path", {"id": f"eq.{credential_id}"}, limit=1)
+    rows = get_json(
+        settings,
+        "credentials",
+        "id,data_json,photo_path",
+        {"id": f"eq.{credential_id}"},
+        limit=1,
+    )
     if not rows:
         raise RuntimeError("credential_not_found")
     return rows[0]
@@ -151,18 +165,24 @@ def _guess_mime_from_storage_path(storage_path: str) -> str:
     return "image/jpeg"
 
 
-def _download_reference_image(settings: Settings, storage_path: str) -> tuple[bytes, str]:
+def _download_reference_image(
+    settings: Settings, storage_path: str
+) -> tuple[bytes, str]:
     bucket = settings.supabase_bucket
     url = f"{settings.supabase_url}/storage/v1/object/{bucket}/{storage_path}"
     r = requests.get(url, headers=rest_headers(settings), timeout=40)
     if not r.ok:
         raise RuntimeError(f"reference_download_failed:{r.status_code}:{r.text[:160]}")
-    mime = (r.headers.get("Content-Type") or "").strip() or _guess_mime_from_storage_path(storage_path)
+    mime = (
+        r.headers.get("Content-Type") or ""
+    ).strip() or _guess_mime_from_storage_path(storage_path)
     return r.content, mime
 
 
 def _extract_generation_inputs(cred_row: dict) -> tuple[str, str]:
-    data = cred_row.get("data_json") if isinstance(cred_row.get("data_json"), dict) else {}
+    data = (
+        cred_row.get("data_json") if isinstance(cred_row.get("data_json"), dict) else {}
+    )
     gender = str((data or {}).get("gender") or "mulher").strip().lower()
     hair_color = str((data or {}).get("hair_color") or "castanho").strip().lower()
     if gender not in _ALLOWED_GENDERS:
@@ -172,7 +192,9 @@ def _extract_generation_inputs(cred_row: dict) -> tuple[str, str]:
     return gender, hair_color
 
 
-def _load_archetype(settings: Settings, experience_id: str, archetype_id: str) -> dict | None:
+def _load_archetype(
+    settings: Settings, experience_id: str, archetype_id: str
+) -> dict | None:
     if not archetype_id:
         return None
     rows = get_json(
@@ -196,7 +218,9 @@ def _load_first_archetype(settings: Settings, experience_id: str) -> dict | None
     return rows[0] if rows else None
 
 
-def _resolve_experience_gemini_key(settings: Settings, experience_id: str) -> str | None:
+def _resolve_experience_gemini_key(
+    settings: Settings, experience_id: str
+) -> str | None:
     """
     Strict mode:
     - Use only experiences.gemini_api_key (per experience, set in panel).
@@ -210,7 +234,9 @@ def _resolve_experience_gemini_key(settings: Settings, experience_id: str) -> st
             {"id": f"eq.{experience_id}"},
             limit=1,
         )
-        exp_key = str((rows[0] or {}).get("gemini_api_key") or "").strip() if rows else ""
+        exp_key = (
+            str((rows[0] or {}).get("gemini_api_key") or "").strip() if rows else ""
+        )
         if exp_key:
             return exp_key
     except Exception:
@@ -222,9 +248,9 @@ def _resolve_experience_gemini_key(settings: Settings, experience_id: str) -> st
 _VAR_TOKEN_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 _WORD_RE = re.compile(r"\b[\wÀ-ÿ]+\b", re.UNICODE)
 _LEGACY_VAR_PATTERNS = [
-    re.compile(r"\[\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\]\]"),   # [[key]]
-    re.compile(r"\{\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\]\}"),   # {[key]}
-    re.compile(r"\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\]"),       # [key]
+    re.compile(r"\[\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\]\]"),  # [[key]]
+    re.compile(r"\{\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\]\}"),  # {[key]}
+    re.compile(r"\[\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\]"),  # [key]
 ]
 
 _PROMPT_EXACT_TRANSLATIONS = {
@@ -286,7 +312,9 @@ _PROMPT_KEY_ALIASES = {
 }
 
 
-def _resolve_prompt_variable_value(key: str, normalized_payload: dict[str, object]) -> object | None:
+def _resolve_prompt_variable_value(
+    key: str, normalized_payload: dict[str, object]
+) -> object | None:
     """
     Resolves a prompt variable value with alias fallback.
     This avoids silent empty replacements when variable keys differ slightly
@@ -361,7 +389,11 @@ def _is_retryable_gemini_error_message(message: str) -> bool:
 
 
 def _strip_accents(text: str) -> str:
-    return "".join(ch for ch in unicodedata.normalize("NFD", text or "") if unicodedata.category(ch) != "Mn")
+    return "".join(
+        ch
+        for ch in unicodedata.normalize("NFD", text or "")
+        if unicodedata.category(ch) != "Mn"
+    )
 
 
 def _normalize_variable_key(raw: str) -> str:
@@ -382,7 +414,10 @@ def _normalize_variable_key(raw: str) -> str:
 def _normalize_template_placeholders(template: str) -> str:
     normalized = template or ""
     for pattern in _LEGACY_VAR_PATTERNS:
-        normalized = pattern.sub(lambda m: "{{" + _normalize_variable_key(str(m.group(1) or "")) + "}}", normalized)
+        normalized = pattern.sub(
+            lambda m: "{{" + _normalize_variable_key(str(m.group(1) or "")) + "}}",
+            normalized,
+        )
     return normalized
 
 
@@ -398,7 +433,9 @@ def _translate_prompt_value_to_english(value) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, (list, tuple)):
-        return ", ".join(_translate_prompt_value_to_english(v) for v in value if v is not None)
+        return ", ".join(
+            _translate_prompt_value_to_english(v) for v in value if v is not None
+        )
 
     raw = str(value).strip()
     if not raw:
@@ -572,12 +609,18 @@ def _process_job(settings: Settings, job: Job):
         level="info",
         event="job_started",
         message="Generation worker started processing job",
-        payload={"kind": job.kind, "experience_id": job.experience_id, "credential_id": job.credential_id},
+        payload={
+            "kind": job.kind,
+            "experience_id": job.experience_id,
+            "credential_id": job.credential_id,
+        },
     )
     try:
         cred = _load_credential_data(settings, job.credential_id)
         gender, hair_color = _extract_generation_inputs(cred)
-        cred_data_for_log = cred.get("data_json") if isinstance(cred.get("data_json"), dict) else {}
+        cred_data_for_log = (
+            cred.get("data_json") if isinstance(cred.get("data_json"), dict) else {}
+        )
         _write_generation_log(
             settings,
             job.id,
@@ -589,25 +632,44 @@ def _process_job(settings: Settings, job: Job):
                 "has_data_json": bool(cred.get("data_json")),
                 "gender": gender,
                 "hair_color": hair_color,
-                "winner_archetype_id": str((cred_data_for_log or {}).get("winner_archetype_id") or ""),
+                "winner_archetype_id": str(
+                    (cred_data_for_log or {}).get("winner_archetype_id") or ""
+                ),
             },
         )
         out_path = ""
         photo_path = str(cred.get("photo_path") or "").strip()
-        cred_data = cred.get("data_json") if isinstance(cred.get("data_json"), dict) else {}
-        winner_archetype_id = str((cred_data or {}).get("winner_archetype_id") or "").strip()
-        archetype = _load_archetype(settings, job.experience_id, winner_archetype_id) if winner_archetype_id else None
+        cred_data = (
+            cred.get("data_json") if isinstance(cred.get("data_json"), dict) else {}
+        )
+        winner_archetype_id = str(
+            (cred_data or {}).get("winner_archetype_id") or ""
+        ).strip()
+        archetype = (
+            _load_archetype(settings, job.experience_id, winner_archetype_id)
+            if winner_archetype_id
+            else None
+        )
         if not archetype:
             archetype = _load_first_archetype(settings, job.experience_id)
-        archetype_prompt = _render_prompt_template(str((archetype or {}).get("image_prompt") or ""), cred_data)
+        archetype_prompt = _render_prompt_template(
+            str((archetype or {}).get("image_prompt") or ""), cred_data
+        )
         prompt_source = "archetype" if archetype_prompt else "fixed_default"
 
         # Preferred mode: Gemini generation. With photo when available; prompt-only when archetype allows it.
-        effective_gemini_key = _resolve_experience_gemini_key(settings, job.experience_id)
+        effective_gemini_key = _resolve_experience_gemini_key(
+            settings, job.experience_id
+        )
         if not effective_gemini_key:
             raise RuntimeError("missing_experience_gemini_key")
         use_photo_prompt = bool((archetype or {}).get("use_photo_prompt"))
-        can_prompt_only = bool(effective_gemini_key and (not photo_path) and archetype_prompt and (not use_photo_prompt))
+        can_prompt_only = bool(
+            effective_gemini_key
+            and (not photo_path)
+            and archetype_prompt
+            and (not use_photo_prompt)
+        )
         if effective_gemini_key and (photo_path or can_prompt_only):
             gemini_settings = replace(settings, gemini_api_key=effective_gemini_key)
             gemini = GeminiImageClient(gemini_settings)
@@ -619,7 +681,9 @@ def _process_job(settings: Settings, job: Job):
                 ref_bytes, ref_mime = _download_reference_image(settings, photo_path)
                 generation_mode = "reference_photo"
             else:
-                prompt_applied = archetype_prompt or build_editorial_prompt(gender, hair_color)
+                prompt_applied = archetype_prompt or build_editorial_prompt(
+                    gender, hair_color
+                )
                 generation_mode = "prompt_only"
 
             generated_bytes = b""
@@ -642,13 +706,19 @@ def _process_job(settings: Settings, job: Job):
                             ),
                         )
                         if status != 200 or not out.get("ok"):
-                            raise RuntimeError(str(out.get("error") or f"gemini_failed_status_{status}"))
+                            raise RuntimeError(
+                                str(
+                                    out.get("error") or f"gemini_failed_status_{status}"
+                                )
+                            )
                         generated_b64 = str(out.get("image_base64") or "")
                         generated_mime = str(out.get("mime_type") or "image/png")
                         prompt_applied = str(out.get("prompt_applied") or "")
                         model_name = out.get("model")
                         latency_ms = out.get("latency_ms")
-                        generated_bytes = base64.b64decode(generated_b64) if generated_b64 else b""
+                        generated_bytes = (
+                            base64.b64decode(generated_b64) if generated_b64 else b""
+                        )
                     else:
                         t_gem = time.time()
                         raw = gemini.generate_from_prompt(prompt_applied)
@@ -673,7 +743,10 @@ def _process_job(settings: Settings, job: Job):
                 except Exception as exc:
                     last_err = exc
                     err_str = str(exc)
-                    retryable = attempt < max_attempts and _is_retryable_gemini_error_message(err_str)
+                    retryable = (
+                        attempt < max_attempts
+                        and _is_retryable_gemini_error_message(err_str)
+                    )
                     _write_generation_log(
                         settings,
                         job.id,
@@ -839,16 +912,54 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run quiz generation worker")
     parser.add_argument("--max-workers", type=int, default=5, help="Concurrent jobs")
     parser.add_argument("--batch-size", type=int, default=20, help="Pending fetch size")
-    parser.add_argument("--once", action="store_true", help="Process one batch and exit")
-    parser.add_argument("--poll-seconds", type=float, default=2.0, help="Sleep interval when no pending jobs")
+    parser.add_argument(
+        "--once", action="store_true", help="Process one batch and exit"
+    )
+    parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=2.0,
+        help="Sleep interval when no pending jobs",
+    )
+    parser.add_argument(
+        "--network-retry-base-seconds",
+        type=float,
+        default=2.0,
+        help="Base backoff when pending fetch fails due to network/DNS",
+    )
+    parser.add_argument(
+        "--network-retry-max-seconds",
+        type=float,
+        default=60.0,
+        help="Max backoff when pending fetch fails due to network/DNS",
+    )
     args = parser.parse_args()
 
     settings = Settings.load()
     max_workers = max(1, int(args.max_workers))
     batch_size = max(1, int(args.batch_size))
+    net_retry_base = max(0.1, float(args.network_retry_base_seconds))
+    net_retry_max = max(net_retry_base, float(args.network_retry_max_seconds))
+    net_error_count = 0
 
     while True:
-        pending_ids = _fetch_pending(settings, batch_size)
+        try:
+            pending_ids = _fetch_pending(settings, batch_size)
+            net_error_count = 0
+        except requests.exceptions.RequestException as exc:
+            net_error_count += 1
+            sleep_s = min(
+                net_retry_max, net_retry_base * (2 ** max(0, net_error_count - 1))
+            )
+            print(
+                f"[WORKER] network_fetch_pending_error attempt={net_error_count} "
+                f"sleep_s={sleep_s:.1f} err={exc}",
+                flush=True,
+            )
+            if args.once:
+                return 1
+            time.sleep(sleep_s)
+            continue
         if not pending_ids:
             if args.once:
                 break
