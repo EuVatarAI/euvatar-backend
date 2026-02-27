@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 import os
+import re
+from datetime import datetime, timezone
 from flask import Blueprint, current_app, jsonify, request
 
 from app.infrastructure.supabase_rest import get_json, rest_headers
@@ -16,6 +18,9 @@ logger = LOGGER.get_logger(__name__)
 _ALLOWED_MODES = {"mobile", "totem", "auto"}
 _ALLOWED_UPLOAD_TYPES = {"user_photo", "video", "asset"}
 _ALLOWED_GENERATION_KINDS = {"credential_card", "quiz_result", "photo_with"}
+_ALLOWED_VARIABLE_FIELD_TYPES = {"text", "email", "phone", "number", "select"}
+_MAX_LEAD_VALUE_LENGTH = 300
+_MAX_LEAD_FIELD_COUNT = 30
 _MAX_UPLOAD_SIZE_BYTES_BY_TYPE = {
     "user_photo": int(os.getenv("QUIZ_MAX_USER_PHOTO_MB", "20"))
     * 1024
@@ -98,6 +103,170 @@ def _load_experience_by_id(experience_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def _load_experience_variables(experience_id: str) -> list[dict]:
+    c = current_app.container
+    rows = get_json(
+        c.settings,
+        "experience_variables",
+        "variable_key,label,field_type,required,sort_order,options",
+        {"experience_id": f"eq.{experience_id}", "order": "sort_order.asc"},
+    )
+    return rows or []
+
+
+def _normalize_variable_key(value: str) -> str:
+    key = (value or "").strip().lower()
+    return re.sub(r"[^a-z0-9_]", "_", key)
+
+
+def _validate_email(value: str) -> bool:
+    return bool(re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", value))
+
+
+def _validate_phone(value: str) -> bool:
+    return bool(re.match(r"^\+?[0-9()\-\s]{8,20}$", value))
+
+
+def _validate_number(value: str) -> bool:
+    return bool(re.match(r"^-?\d+([.,]\d+)?$", value))
+
+
+def _clean_lead_data(raw: dict, variables: list[dict]) -> tuple[dict, str | None]:
+    if not isinstance(raw, dict):
+        return {}, "invalid_data_payload"
+    if len(raw.keys()) > _MAX_LEAD_FIELD_COUNT:
+        return {}, "too_many_fields"
+
+    variables_by_key = {}
+    for item in variables:
+        key = _normalize_variable_key(str(item.get("variable_key") or ""))
+        if key:
+            variables_by_key[key] = item
+
+    cleaned: dict[str, str] = {}
+    for raw_key, raw_value in raw.items():
+        key = _normalize_variable_key(str(raw_key or ""))
+        if not key:
+            continue
+        value = str(raw_value or "").strip()
+        if len(value) > _MAX_LEAD_VALUE_LENGTH:
+            return {}, f"value_too_large:{key}"
+
+        rule = variables_by_key.get(key)
+        if not rule:
+            cleaned[key] = value
+            continue
+
+        field_type = str(rule.get("field_type") or "text").strip().lower()
+        if field_type not in _ALLOWED_VARIABLE_FIELD_TYPES:
+            field_type = "text"
+
+        if value:
+            if field_type == "email" and not _validate_email(value):
+                return {}, f"invalid_email:{key}"
+            if field_type == "phone" and not _validate_phone(value):
+                return {}, f"invalid_phone:{key}"
+            if field_type == "number" and not _validate_number(value):
+                return {}, f"invalid_number:{key}"
+            if field_type == "select":
+                valid_options = [
+                    str(opt).strip()
+                    for opt in (rule.get("options") or [])
+                    if str(opt).strip()
+                ]
+                if valid_options and value not in valid_options:
+                    return {}, f"invalid_option:{key}"
+
+        cleaned[key] = value
+
+    for key, rule in variables_by_key.items():
+        if bool(rule.get("required")) and not (cleaned.get(key) or "").strip():
+            return {}, f"missing_required_field:{key}"
+
+    return cleaned, None
+
+
+def _insert_credential_row(
+    experience_id: str, data: dict, mode_used: str
+) -> tuple[str | None, str | None]:
+    c = current_app.container
+    url = f"{c.settings.supabase_url}/rest/v1/credentials"
+    req_rows = [
+        {
+            "experience_id": experience_id,
+            "data_json": data,
+            "mode_used": mode_used,
+        }
+    ]
+    r = requests.post(
+        url,
+        headers={
+            **rest_headers(c.settings),
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        },
+        json=req_rows,
+        timeout=20,
+    )
+    if not r.ok:
+        return None, f"credential_insert_failed:{r.text[:180]}"
+
+    rows = r.json() or []
+    if not rows or not rows[0].get("id"):
+        return None, "credential_insert_empty"
+    return str(rows[0]["id"]), None
+
+
+def _insert_lead_row(
+    experience_id: str, data: dict
+) -> tuple[bool, str | None, str | None]:
+    c = current_app.container
+    lead_payload = {"experience_id": experience_id, "quiz_answers": data}
+    url = f"{c.settings.supabase_url}/rest/v1/leads"
+    r = requests.post(
+        url,
+        headers={
+            **rest_headers(c.settings),
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+        },
+        json=[lead_payload],
+        timeout=20,
+    )
+    if r.ok:
+        rows = r.json() or []
+        lead_id = str(rows[0].get("id") or "").strip() if rows else ""
+        return True, None, (lead_id or None)
+    return False, f"lead_insert_failed:{r.status_code}", None
+
+
+def _complete_lead_row(
+    experience_id: str, lead_id: str, archetype_result_id: str
+) -> tuple[bool, str | None]:
+    c = current_app.container
+    completed_at = datetime.now(timezone.utc).isoformat()
+    url = (
+        f"{c.settings.supabase_url}/rest/v1/leads"
+        f"?id=eq.{lead_id}&experience_id=eq.{experience_id}"
+    )
+    r = requests.patch(
+        url,
+        headers={
+            **rest_headers(c.settings),
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+        json={
+            "archetype_result_id": archetype_result_id,
+            "completed_at": completed_at,
+        },
+        timeout=20,
+    )
+    if r.ok:
+        return True, None
+    return False, f"lead_complete_failed:{r.status_code}"
+
+
 def _load_credential_for_experience(
     credential_id: str, experience_id: str
 ) -> dict | None:
@@ -119,6 +288,17 @@ def _count_done_generations(experience_id: str) -> int:
         "generations",
         "id",
         {"experience_id": f"eq.{experience_id}", "status": "eq.done"},
+    )
+    return len(rows)
+
+
+def _count_started_leads(experience_id: str) -> int:
+    c = current_app.container
+    rows = get_json(
+        c.settings,
+        "leads",
+        "id",
+        {"experience_id": f"eq.{experience_id}"},
     )
     return len(rows)
 
@@ -299,7 +479,6 @@ def validate_gemini_key():
 
 @bp.post("/credentials")
 def create_credential():
-    c = current_app.container
     try:
         payload = request.get_json(force=True) or {}
         experience_id = (payload.get("experience_id") or "").strip()
@@ -319,37 +498,18 @@ def create_credential():
                 404,
             )
 
-        url = f"{c.settings.supabase_url}/rest/v1/credentials"
-        req_rows = [
-            {
-                "experience_id": experience_id,
-                "data_json": data,
-                "mode_used": mode_used,
-            }
-        ]
-        r = requests.post(
-            url,
-            headers={
-                **rest_headers(c.settings),
-                "Content-Type": "application/json",
-                "Prefer": "return=representation",
-            },
-            json=req_rows,
-            timeout=20,
+        credential_id, insert_error = _insert_credential_row(
+            experience_id, data, mode_used
         )
-        if not r.ok:
+        if insert_error or not credential_id:
             return (
                 jsonify(
-                    {"ok": False, "error": f"credential_insert_failed:{r.text[:180]}"}
+                    {"ok": False, "error": insert_error or "credential_insert_failed"}
                 ),
                 502,
             )
 
-        rows = r.json() or []
-        if not rows or not rows[0].get("id"):
-            return jsonify({"ok": False, "error": "credential_insert_empty"}), 502
-
-        return jsonify({"ok": True, "credential_id": rows[0]["id"]}), 201
+        return jsonify({"ok": True, "credential_id": credential_id}), 201
     except Exception as exc:
         return (
             jsonify({"ok": False, "error": f"create_credential_exception:{exc}"}),
@@ -692,3 +852,246 @@ def get_generation_logs(generation_id: str):
         return jsonify({"ok": True, "generation_id": gid, "logs": rows}), 200
     except Exception as exc:
         return jsonify({"ok": False, "error": f"generation_logs_exception:{exc}"}), 500
+
+
+@bp.get("/public/experience/<slug>/lead-config")
+def public_experience_lead_config(slug: str):
+    try:
+        s = (slug or "").strip()
+        if not s:
+            return jsonify({"ok": False, "error": "missing_slug"}), 400
+
+        exp = _load_active_experience_by_slug(s)
+        if not exp:
+            return (
+                jsonify({"ok": False, "error": "experience_not_found_or_inactive"}),
+                404,
+            )
+
+        experience_id = str(exp.get("id") or "").strip()
+        if not experience_id:
+            return jsonify({"ok": False, "error": "experience_missing_id"}), 500
+
+        rows = _load_experience_variables(experience_id)
+        variables = []
+        for row in rows:
+            field_type = str(row.get("field_type") or "text").strip().lower()
+            if field_type not in _ALLOWED_VARIABLE_FIELD_TYPES:
+                field_type = "text"
+            variables.append(
+                {
+                    "key": _normalize_variable_key(str(row.get("variable_key") or "")),
+                    "label": str(row.get("label") or "").strip(),
+                    "field_type": field_type,
+                    "required": bool(row.get("required")),
+                    "options": row.get("options") or [],
+                }
+            )
+
+        config = exp.get("config_json") or {}
+        lead_capture = config.get("lead_capture") if isinstance(config, dict) else None
+        enabled_from_config = (
+            bool(lead_capture.get("enabled"))
+            if isinstance(lead_capture, dict)
+            else False
+        )
+        lead_enabled = enabled_from_config or len(variables) > 0
+
+        return (
+            jsonify(
+                {
+                    "ok": True,
+                    "experience_id": experience_id,
+                    "lead_capture": {
+                        "enabled": lead_enabled,
+                        "gate_before_unlock": lead_enabled,
+                        "fields": variables,
+                    },
+                }
+            ),
+            200,
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"lead_config_exception:{exc}"}), 500
+
+
+@bp.get("/public/experience/<slug>/metrics")
+def public_experience_metrics(slug: str):
+    try:
+        s = (slug or "").strip()
+        if not s:
+            return jsonify({"ok": False, "error": "missing_slug"}), 400
+
+        exp = _load_active_experience_by_slug(s)
+        if not exp:
+            return (
+                jsonify({"ok": False, "error": "experience_not_found_or_inactive"}),
+                404,
+            )
+        experience_id = str(exp.get("id") or "").strip()
+        if not experience_id:
+            return jsonify({"ok": False, "error": "experience_missing_id"}), 500
+
+        started = _count_started_leads(experience_id)
+        done = _count_done_generations(experience_id)
+        completed = min(started, done)
+        dropped = max(0, started - completed)
+        return (
+            jsonify(
+                {
+                    "ok": True,
+                    "experience_id": experience_id,
+                    "started": started,
+                    "completed": completed,
+                    "dropped": dropped,
+                    "done_generations": done,
+                }
+            ),
+            200,
+        )
+    except Exception as exc:
+        return (
+            jsonify(
+                {"ok": False, "error": f"public_experience_metrics_exception:{exc}"}
+            ),
+            500,
+        )
+
+
+@bp.post("/public/experience/<slug>/leads")
+def create_public_lead(slug: str):
+    try:
+        s = (slug or "").strip()
+        if not s:
+            return jsonify({"ok": False, "error": "missing_slug"}), 400
+
+        payload = request.get_json(force=True) or {}
+        mode_used = (payload.get("mode_used") or "mobile").strip().lower()
+        data = payload.get("data") or {}
+        create_credential = bool(payload.get("create_credential", True))
+        if mode_used not in _ALLOWED_MODES:
+            return jsonify({"ok": False, "error": "invalid_mode_used"}), 400
+
+        exp = _load_active_experience_by_slug(s)
+        if not exp:
+            return (
+                jsonify({"ok": False, "error": "experience_not_found_or_inactive"}),
+                404,
+            )
+        experience_id = str(exp.get("id") or "").strip()
+        if not experience_id:
+            return jsonify({"ok": False, "error": "experience_missing_id"}), 500
+
+        variables = _load_experience_variables(experience_id)
+        clean_data, validation_error = _clean_lead_data(data, variables)
+        if validation_error:
+            return jsonify({"ok": False, "error": validation_error}), 400
+
+        credential_id: str | None = None
+        if create_credential:
+            credential_id, insert_error = _insert_credential_row(
+                experience_id, clean_data, mode_used
+            )
+            if insert_error or not credential_id:
+                return (
+                    jsonify(
+                        {
+                            "ok": False,
+                            "error": insert_error or "credential_insert_failed",
+                        }
+                    ),
+                    502,
+                )
+
+        lead_inserted, lead_error, lead_id = _insert_lead_row(experience_id, clean_data)
+        if not lead_inserted:
+            logger.warning(
+                "[quiz] lead_insert_warning experience_id=%s credential_id=%s error=%s",
+                experience_id,
+                credential_id,
+                lead_error or "lead_insert_failed",
+            )
+
+        logger.info(
+            "[quiz] public_lead_captured experience_id=%s credential_id=%s lead_inserted=%s fields=%s create_credential=%s",
+            experience_id,
+            credential_id or "-",
+            lead_inserted,
+            len(clean_data.keys()),
+            create_credential,
+        )
+        return (
+            jsonify(
+                {
+                    "ok": True,
+                    "experience_id": experience_id,
+                    "credential_id": credential_id,
+                    "lead_id": lead_id,
+                    "lead_inserted": lead_inserted,
+                    "unlock": True,
+                }
+            ),
+            201,
+        )
+    except Exception as exc:
+        logger.error(
+            "[quiz] create_public_lead_exception slug=%s error=%s", slug, str(exc)
+        )
+        return (
+            jsonify({"ok": False, "error": f"create_public_lead_exception:{exc}"}),
+            500,
+        )
+
+
+@bp.post("/public/experience/<slug>/leads/<lead_id>/complete")
+def complete_public_lead(slug: str, lead_id: str):
+    try:
+        s = (slug or "").strip()
+        lid = (lead_id or "").strip()
+        if not s:
+            return jsonify({"ok": False, "error": "missing_slug"}), 400
+        if not lid:
+            return jsonify({"ok": False, "error": "missing_lead_id"}), 400
+
+        payload = request.get_json(force=True) or {}
+        archetype_result_id = (payload.get("archetype_result_id") or "").strip()
+        if not archetype_result_id:
+            return jsonify({"ok": False, "error": "missing_archetype_result_id"}), 400
+
+        exp = _load_active_experience_by_slug(s)
+        if not exp:
+            return (
+                jsonify({"ok": False, "error": "experience_not_found_or_inactive"}),
+                404,
+            )
+        experience_id = str(exp.get("id") or "").strip()
+        if not experience_id:
+            return jsonify({"ok": False, "error": "experience_missing_id"}), 500
+
+        updated, update_error = _complete_lead_row(
+            experience_id, lid, archetype_result_id
+        )
+        if not updated:
+            return (
+                jsonify({"ok": False, "error": update_error or "lead_complete_failed"}),
+                502,
+            )
+
+        logger.info(
+            "[quiz] public_lead_completed experience_id=%s lead_id=%s archetype_result_id=%s",
+            experience_id,
+            lid,
+            archetype_result_id,
+        )
+        return jsonify({"ok": True, "lead_id": lid, "completed": True}), 200
+    except Exception as exc:
+        logger.error(
+            "[quiz] complete_public_lead_exception slug=%s lead_id=%s error=%s",
+            slug,
+            lead_id,
+            str(exc),
+        )
+        return (
+            jsonify({"ok": False, "error": f"complete_public_lead_exception:{exc}"}),
+            500,
+        )
