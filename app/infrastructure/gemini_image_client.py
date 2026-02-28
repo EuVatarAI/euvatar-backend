@@ -14,15 +14,17 @@ class GeminiImageClient(IImageGenerationClient):
         self._s = settings
         if not self._s.gemini_api_key:
             raise RuntimeError("missing_GEMINI_API_KEY")
+        self._model = (self._s.gemini_image_model or "gemini-2.5-flash-image").strip()
+        self._api_key = (self._s.gemini_api_key or "").strip()
+        self._url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self._model}:generateContent?key={self._api_key}"
+        )
+        self._session = requests.Session()
+        self._session.headers.update({"Content-Type": "application/json"})
 
     def _request_generation(self, payload: dict) -> dict:
-        model = (self._s.gemini_image_model or "gemini-2.5-flash-image").strip()
-        api_key = (self._s.gemini_api_key or "").strip()
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={api_key}"
-        )
-        r = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=90)
+        r = self._session.post(self._url, json=payload, timeout=90)
         if not r.ok:
             body = (r.text or "").replace("\n", " ").strip()
             body = body[:400] if body else ""
@@ -73,7 +75,7 @@ class GeminiImageClient(IImageGenerationClient):
         out_mime = image_part.get("mimeType") or image_part.get("mime_type") or "image/png"
 
         return {
-            "model": model,
+            "model": self._model,
             "mime_type": out_mime,
             "image_bytes": base64.b64decode(out_b64),
             "usage_metadata": data.get("usageMetadata") or data.get("usage_metadata"),
@@ -84,6 +86,17 @@ class GeminiImageClient(IImageGenerationClient):
             raise ValueError("missing_reference_image")
 
         b64 = base64.b64encode(image_bytes).decode("ascii")
+        return self.generate_from_reference_b64(
+            prompt=prompt,
+            image_b64=b64,
+            mime_type=mime_type,
+        )
+
+    def generate_from_reference_b64(
+        self, prompt: str, image_b64: str, mime_type: str
+    ) -> dict:
+        if not image_b64:
+            raise ValueError("missing_reference_image")
         payload = {
             "contents": [
                 {
@@ -92,7 +105,7 @@ class GeminiImageClient(IImageGenerationClient):
                         {
                             "inline_data": {
                                 "mime_type": mime_type or "image/jpeg",
-                                "data": b64,
+                                "data": image_b64,
                             }
                         },
                     ]

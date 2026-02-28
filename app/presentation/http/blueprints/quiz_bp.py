@@ -25,6 +25,12 @@ _MAX_UPLOAD_SIZE_BYTES_BY_TYPE = {
 }
 
 
+def _as_clean_str(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def _is_eager_generation_enabled() -> bool:
     return os.getenv("QUIZ_EAGER_GENERATION_ON_UPLOAD", "false").strip().lower() in {
         "1",
@@ -571,9 +577,9 @@ def create_generation():
     c = current_app.container
     try:
         payload = request.get_json(force=True) or {}
-        experience_id = (payload.get("experience_id") or "").strip()
-        credential_id = (payload.get("credential_id") or "").strip()
-        kind_in = (payload.get("kind") or "").strip().lower()
+        experience_id = _as_clean_str(payload.get("experience_id"))
+        credential_id = _as_clean_str(payload.get("credential_id"))
+        kind_in = _as_clean_str(payload.get("kind")).lower()
 
         if not experience_id:
             return jsonify({"ok": False, "error": "missing_experience_id"}), 400

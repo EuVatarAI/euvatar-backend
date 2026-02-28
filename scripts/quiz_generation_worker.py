@@ -29,10 +29,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.core.settings import Settings
-from app.application.use_cases.generate_editorial_image import (
-    GenerateEditorialImageInput,
-    execute as generate_editorial_image_uc,
-)
 from app.application.services.image_prompt_builder import build_editorial_prompt
 from app.infrastructure.gemini_image_client import GeminiImageClient
 from app.infrastructure.supabase_rest import get_json, rest_headers
@@ -676,14 +672,14 @@ def _process_job(settings: Settings, job: Job):
             max_attempts = _gemini_max_attempts()
             retry_base_delay = _gemini_retry_base_delay_seconds()
             ref_bytes = b""
+            ref_b64 = ""
             ref_mime = "image/jpeg"
+            prompt_applied = archetype_prompt or build_editorial_prompt(gender, hair_color)
             if photo_path:
                 ref_bytes, ref_mime = _download_reference_image(settings, photo_path)
+                ref_b64 = base64.b64encode(ref_bytes).decode("ascii")
                 generation_mode = "reference_photo"
             else:
-                prompt_applied = archetype_prompt or build_editorial_prompt(
-                    gender, hair_color
-                )
                 generation_mode = "prompt_only"
 
             generated_bytes = b""
@@ -695,30 +691,16 @@ def _process_job(settings: Settings, job: Job):
             for attempt in range(1, max_attempts + 1):
                 try:
                     if photo_path:
-                        out, status = generate_editorial_image_uc(
-                            gemini,
-                            GenerateEditorialImageInput(
-                                gender=gender,
-                                hair_color=hair_color,
-                                reference_image_bytes=ref_bytes,
-                                reference_mime_type=ref_mime,
-                                prompt_override=archetype_prompt or None,
-                            ),
+                        t_gem = time.time()
+                        raw = gemini.generate_from_reference_b64(
+                            prompt=prompt_applied,
+                            image_b64=ref_b64,
+                            mime_type=ref_mime,
                         )
-                        if status != 200 or not out.get("ok"):
-                            raise RuntimeError(
-                                str(
-                                    out.get("error") or f"gemini_failed_status_{status}"
-                                )
-                            )
-                        generated_b64 = str(out.get("image_base64") or "")
-                        generated_mime = str(out.get("mime_type") or "image/png")
-                        prompt_applied = str(out.get("prompt_applied") or "")
-                        model_name = out.get("model")
-                        latency_ms = out.get("latency_ms")
-                        generated_bytes = (
-                            base64.b64decode(generated_b64) if generated_b64 else b""
-                        )
+                        latency_ms = int((time.time() - t_gem) * 1000)
+                        generated_bytes = raw.get("image_bytes") or b""
+                        generated_mime = str(raw.get("mime_type") or "image/png")
+                        model_name = raw.get("model")
                     else:
                         t_gem = time.time()
                         raw = gemini.generate_from_prompt(prompt_applied)
@@ -876,7 +858,6 @@ def _process_job(settings: Settings, job: Job):
                 "cost_currency": "USD",
             },
         )
-        print(f"[WORKER] done generation={job.id} duration_ms={dur}")
     except Exception as exc:
         dur = int((time.time() - t0) * 1000)
         _finish_job_error(settings, job, dur, str(exc))
@@ -893,7 +874,6 @@ def _process_job(settings: Settings, job: Job):
                 "error": str(exc)[:1000],
             },
         )
-        print(f"[WORKER] error generation={job.id} duration_ms={dur} err={exc}")
 
 
 def _fetch_pending(settings: Settings, limit: int) -> list[str]:
@@ -987,7 +967,6 @@ def main() -> int:
 
         if args.once:
             break
-
     return 0
 
 
