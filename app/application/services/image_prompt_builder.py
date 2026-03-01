@@ -27,17 +27,12 @@ _HAIR_TOKENS = {
 _PROMPT_TEMPLATE = (
     "Portrait orientation 1:1, professional color studio portrait of a "
     "{person_quality} {hair_color} {person_noun}, medium shot.\n"
-    "Maintain original facial features, proportions, skin tone, hair length, hair volume and hairstyle shape.\n"
-    "Do not add wrinkles or signs of aging. Preserve youthful skin without altering facial structure.\n"
-    "Color editorial studio portrait, three-quarter angle composition. Body slightly tilted, face facing left, "
-    "eyes looking forward with a calm and confident side glance.\n"
-    "Facial expression: subtle happy expression. Natural, relaxed smile. Soft smile with slightly lifted cheeks "
-    "and gentle brightness in the eyes. No exaggerated grin, no forced smile.\n"
-    "Professional studio lighting with natural daylight quality. Soft key light from one side, simulating large "
-    "studio window light. Cinematic side lighting creating subtle chiaroscuro. Clean separation between subject "
-    "and background using light, not artificial blur.\n"
-    "Strong solid blue seamless background, infinite studio backdrop. Deep sky blue background, evenly lit from "
-    "edge to edge. No texture, no gradients, no visible edges.\n"
+    "Preserve original facial features, proportions, skin tone, hair length, volume, and hairstyle.\n"
+    "Do not add wrinkles or signs of aging. Keep youthful skin without altering facial structure.\n"
+    "Three-quarter editorial composition: body slightly tilted, face turned left, eyes forward, calm confident side glance.\n"
+    "Subtle happy expression with a natural relaxed soft smile. No exaggerated grin or forced smile.\n"
+    "Natural daylight-quality studio lighting with soft side key light and subtle cinematic chiaroscuro.\n"
+    "Strong solid blue seamless background, infinite studio backdrop. Deep sky blue, evenly lit, no texture, no gradients, no visible edges.\n"
     "Real human skin with visible pores and natural skin texture. No plastic look, no beauty retouching."
 )
 
@@ -59,4 +54,3 @@ def build_editorial_prompt(gender: str, hair_color: str) -> str:
         hair_color=hair_token,
         person_noun=person_noun,
     )
-
