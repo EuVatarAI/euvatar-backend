@@ -64,7 +64,9 @@ def image_generate_route():
 
         filename = f"generated_{uuid.uuid4().hex}.{ext}"
         dest = os.path.join(c.settings.upload_dir, filename)
-        gen_bytes = base64.b64decode(out.get("image_base64") or "")
+        gen_bytes = out.get("image_bytes") or b""
+        if not gen_bytes:
+            gen_bytes = base64.b64decode(out.get("image_base64") or "")
         with open(dest, "wb") as fp:
             fp.write(gen_bytes)
 

@@ -46,6 +46,7 @@ def execute(image_client: IImageGenerationClient, args: GenerateEditorialImageIn
                 "model": out.get("model"),
                 "latency_ms": latency_ms,
                 "mime_type": out.get("mime_type"),
+                "image_bytes": out.get("image_bytes") or b"",
                 "image_base64": base64.b64encode(out.get("image_bytes") or b"").decode("ascii"),
                 "usage_metadata": out.get("usage_metadata"),
                 "prompt_applied": prompt,

@@ -7,6 +7,7 @@ from flask import request, jsonify, current_app, abort, g
 
 def _is_public_path_allowed(path: str) -> bool:
     static_allowed = {
+        "/health",
         "/credentials",
         "/uploads/signed-url",
         "/uploads/confirm",
